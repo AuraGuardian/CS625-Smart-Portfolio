@@ -13,21 +13,29 @@ from smart_portfolio_analyzer import (
     PortfolioAnalyzer
 )
 
-# Initialize DataManager with Streamlit secrets
+# Initialize DataManager with environment variables
 try:
-    # Try to get API key from Streamlit secrets first
+    # Try to get API key from Streamlit secrets first (for production)
     if 'POLYGON_API_KEY' in st.secrets:
         DATA_MANAGER = DataManager(api_key=st.secrets['POLYGON_API_KEY'])
-    # Fallback to config.py for local development
+    # Fallback to .env file for local development
     else:
-        try:
-            from config import POLYGON_API_KEY
-            DATA_MANAGER = DataManager(api_key=POLYGON_API_KEY)
-        except (ImportError, ValueError) as e:
-            st.error("Error initializing DataManager. Please ensure you have a valid Polygon.io API key in Streamlit secrets or config.py")
-            st.stop()
+        from dotenv import load_dotenv
+        import os
+        
+        # Load environment variables from .env file
+        load_dotenv()
+        
+        # Get API key from environment variables
+        polygon_api_key = os.getenv('POLYGON_API_KEY')
+        if not polygon_api_key:
+            raise ValueError("POLYGON_API_KEY not found in environment variables")
+            
+        DATA_MANAGER = DataManager(api_key=polygon_api_key)
+        
 except Exception as e:
     st.error(f"Error initializing DataManager: {str(e)}")
+    st.error("Please ensure you have a valid Polygon.io API key in Streamlit secrets or .env file")
     st.stop()
 
 # Page config
