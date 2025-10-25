@@ -165,7 +165,7 @@ with tab1:
                     if assets_added > 0:
                         st.session_state.portfolio = portfolio
                         st.success(f"Successfully loaded {assets_added} assets into the portfolio!")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("No assets were added to the portfolio. Please check the sample data file.")
                         
