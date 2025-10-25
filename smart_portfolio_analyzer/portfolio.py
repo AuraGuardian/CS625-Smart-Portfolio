@@ -1,10 +1,21 @@
-from typing import Dict, List, Optional, Union, TypeVar, Type
-from datetime import datetime
-import json
+from typing import Dict, List, Optional, TypeVar, Tuple, Any, Type
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import numpy as np
+import numpy.typing as npt
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .assets import Asset, StockAsset, BondAsset
+
+# Type aliases
+FloatArray = npt.NDArray[np.float64]
+ReturnArray = npt.NDArray[np.float64]
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound='Portfolio')
 
@@ -16,103 +27,331 @@ class Portfolio:
     Attributes:
         name (str): Name of the portfolio
         description (str): Optional description
-        assets (Dict[str, Asset]): Dictionary of assets keyed by asset_id
+        assets (List[Asset]): List of assets in the portfolio
+        weights (Dict[str, float]): Weights of each asset by ticker
+        risk_free_rate (float): Annual risk-free rate for calculations (default: 0.02)
         created_at (datetime): When the portfolio was created
-        last_updated (datetime): When the portfolio was last updated
     """
     name: str
     description: str = ""
-    assets: Dict[str, Asset] = field(default_factory=dict)
+    assets: List[Asset] = field(default_factory=list)
+    weights: Dict[str, float] = field(default_factory=dict)
+    risk_free_rate: float = 0.02
     created_at: datetime = field(default_factory=datetime.now)
-    last_updated: datetime = field(init=False)
+    _covariance_matrix: Optional[np.ndarray] = field(init=False, default=None)
+    _expected_returns: Optional[np.ndarray] = field(init=False, default=None)
     
     def __post_init__(self):
-        self.last_updated = self.created_at
+        """Initialize the portfolio and validate weights."""
+        self._validate_weights()
     
-    def add_asset(self, asset: Asset) -> None:
-        """Add an asset to the portfolio."""
-        if asset.asset_id in self.assets:
-            raise ValueError(f"Asset with ID {asset.asset_id} already exists in the portfolio")
-        self.assets[asset.asset_id] = asset
-        self.last_updated = datetime.now()
-    
-    def remove_asset(self, asset_id: str) -> None:
-        """Remove an asset from the portfolio."""
-        if asset_id not in self.assets:
-            raise KeyError(f"Asset with ID {asset_id} not found in the portfolio")
-        del self.assets[asset_id]
-        self.last_updated = datetime.now()
-    
-    def update_asset(self, asset_id: str, **updates) -> None:
-        """Update an existing asset's properties."""
-        if asset_id not in self.assets:
-            raise KeyError(f"Asset with ID {asset_id} not found in the portfolio")
-        
-        asset = self.assets[asset_id]
-        for key, value in updates.items():
-            if hasattr(asset, key):
-                setattr(asset, key, value)
-        
-        self.last_updated = datetime.now()
-    
-    def get_asset(self, asset_id: str) -> Asset:
-        """Get an asset by its ID."""
-        return self.assets.get(asset_id)
-    
-    def get_total_value(self) -> float:
-        """Calculate the total market value of the portfolio."""
-        return sum(asset.market_value for asset in self.assets.values())
-    
-    def get_asset_allocation(self) -> Dict[str, float]:
-        """Get the allocation of each asset as a percentage of the total portfolio."""
-        total_value = self.get_total_value()
-        if total_value == 0:
-            return {}
+    def _validate_weights(self) -> None:
+        """Ensure weights sum to 1 (within floating point tolerance)."""
+        if not self.weights:  # Skip validation if no weights are set yet
+            return
             
+        total = sum(self.weights.values())
+        if not np.isclose(total, 1.0, rtol=1e-5):
+            raise ValueError(f"Weights must sum to 1.0, got {total}")
+    
+    def add_asset(self, asset: Asset, weight: Optional[float] = None) -> None:
+        """
+        Add an asset to the portfolio with an optional weight.
+        
+        Args:
+            asset: The asset to add
+            weight: Optional weight of the asset in the portfolio (0-1). 
+                   If None, weight will be distributed equally among all assets.
+            
+        Time Complexity: O(n) where n is the number of assets (due to weight normalization)
+        """
+        if asset.ticker in {a.ticker for a in self.assets}:
+            raise ValueError(f"Asset with ticker {asset.ticker} already exists in the portfolio")
+            
+        self.assets.append(asset)
+        
+        if weight is not None:
+            if not 0 <= weight <= 1:
+                raise ValueError(f"Weight must be between 0 and 1, got {weight}")
+            self.weights[asset.ticker] = weight
+        else:
+            # If no weight provided, distribute remaining weight equally
+            n = len(self.assets)
+            self.weights[asset.ticker] = 1.0 / n
+            
+        self._normalize_weights()
+        self._invalidate_cache()
+    
+    def _normalize_weights(self) -> None:
+        """Normalize weights to ensure they sum to 1."""
+        total = sum(self.weights.values())
+        if total > 0:
+            self.weights = {k: v/total for k, v in self.weights.items()}
+    
+    def _invalidate_cache(self) -> None:
+        """Invalidate cached calculations when portfolio changes."""
+        self._covariance_matrix = None
+        self._expected_returns = None
+    
+    def calculate_expected_return(self) -> float:
+        """
+        Calculate the expected return of the portfolio.
+        
+        Returns:
+            float: The expected return as a decimal
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
+        if not self.assets:
+            return 0.0
+            
+        if self._expected_returns is None:
+            self._expected_returns = np.array([asset.expected_return for asset in self.assets])
+        
+        weights = np.array([self.weights[asset.ticker] for asset in self.assets])
+        return float(np.dot(weights, self._expected_returns))
+    
+    def calculate_volatility(self) -> float:
+        """
+        Calculate the annualized volatility of the portfolio.
+        
+        Returns:
+            float: The annualized volatility as a decimal
+            
+        Time Complexity: O(n²) due to covariance matrix calculation
+        """
+        if not self.assets:
+            return 0.0
+            
+        if self._covariance_matrix is None:
+            self._calculate_covariance_matrix()
+            
+        weights = np.array([self.weights[asset.ticker] for asset in self.assets])
+        portfolio_variance = weights.T @ self._covariance_matrix @ weights
+        return float(np.sqrt(portfolio_variance))
+    
+    def _calculate_covariance_matrix(self) -> None:
+        """Calculate and cache the covariance matrix of asset returns."""
+        returns = np.column_stack([asset.historical_returns for asset in self.assets])
+        self._covariance_matrix = np.cov(returns, rowvar=False) * 252  # Annualize
+    
+    def calculate_sharpe_ratio(self, risk_free_rate: Optional[float] = None) -> float:
+        """
+        Calculate the Sharpe ratio of the portfolio.
+        
+        Args:
+            risk_free_rate: Optional override for risk-free rate
+            
+        Returns:
+            float: The annualized Sharpe ratio
+            
+        Time Complexity: O(n²) due to volatility calculation
+        """
+        if risk_free_rate is None:
+            risk_free_rate = self.risk_free_rate
+            
+        excess_return = self.calculate_expected_return() - risk_free_rate
+        volatility = self.calculate_volatility()
+        
+        if volatility == 0:
+            return 0.0
+            
+        return excess_return / volatility
+    
+    def rebalance(self, new_weights: Dict[str, float]) -> None:
+        """
+        Rebalance the portfolio to the specified weights.
+        
+        Args:
+            new_weights: Dictionary mapping tickers to new weights
+            
+        Raises:
+            ValueError: If weights don't match assets or don't sum to 1
+        """
+        if set(new_weights.keys()) != {asset.ticker for asset in self.assets}:
+            raise ValueError("Weights must be provided for all assets")
+            
+        self.weights = new_weights
+        self._validate_weights()
+        self._invalidate_cache()
+    
+    def get_asset_weights(self) -> Dict[str, float]:
+        """Return a copy of the current asset weights."""
+        return self.weights.copy()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the portfolio to a dictionary for serialization."""
         return {
-            asset_id: (asset.market_value / total_value) * 100
-            for asset_id, asset in self.assets.items()
+            'name': self.name,
+            'description': self.description,
+            'assets': [asset.to_dict() for asset in self.assets],
+            'weights': self.weights,
+            'risk_free_rate': self.risk_free_rate,
+            'created_at': self.created_at.isoformat()
         }
     
-    def get_asset_type_allocation(self) -> Dict[str, float]:
-        """Get the allocation by asset type (e.g., STOCK, BOND)."""
-        total_value = self.get_total_value()
-        if total_value == 0:
-            return {}
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Portfolio':
+        """
+        Create a Portfolio from a dictionary representation.
+        
+        Args:
+            data: Dictionary containing portfolio data with keys:
+                - name: str
+                - description: str (optional)
+                - assets: List[Dict] - List of asset dictionaries
+                - weights: Dict[str, float] - Asset weights by ticker
+                - risk_free_rate: float (optional, default=0.02)
+                - created_at: str - ISO format datetime string
+                
+        Returns:
+            Portfolio: A new Portfolio instance
             
-        type_values = {}
-        for asset in self.assets.values():
-            asset_type = asset.get_asset_type()
-            type_values[asset_type] = type_values.get(asset_type, 0) + asset.market_value
-            
-        return {t: (v / total_value) * 100 for t, v in type_values.items()}
+        Time Complexity: O(n) where n is the number of assets
+        """
+        from .assets import StockAsset, BondAsset  # Import here to avoid circular imports
+        
+        # Create a new portfolio
+        portfolio = cls(
+            name=data['name'],
+            description=data.get('description', ''),
+            risk_free_rate=float(data.get('risk_free_rate', 0.02)),
+            created_at=datetime.fromisoformat(data['created_at']) if 'created_at' in data else datetime.now()
+        )
+        
+        # Add assets and weights
+        asset_map = {}
+        for asset_data in data.get('assets', []):
+            asset_type = asset_data.get('asset_type')
+            try:
+                if asset_type == 'stock':
+                    asset = StockAsset.from_dict(asset_data)
+                elif asset_type == 'bond':
+                    asset = BondAsset.from_dict(asset_data)
+                else:
+                    raise ValueError(f"Unknown asset type: {asset_type}")
+                
+                weight = data.get('weights', {}).get(asset.ticker, 0.0)
+                portfolio.add_asset(asset, weight)
+                
+            except Exception as e:
+                logger.error(f"Error loading asset {asset_data.get('ticker', 'unknown')}: {str(e)}")
+                continue
+                
+        return portfolio
     
-    def get_sector_allocation(self) -> Dict[str, float]:
-        """Get the allocation by sector (for stocks)."""
+    def remove_asset(self, ticker: str) -> None:
+        """
+        Remove an asset from the portfolio by ticker.
+        
+        Args:
+            ticker: The ticker symbol of the asset to remove
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
+        # Find and remove the asset
+        for i, asset in enumerate(self.assets):
+            if asset.ticker == ticker:
+                self.assets.pop(i)
+                if ticker in self.weights:
+                    del self.weights[ticker]
+                self._normalize_weights()
+                self._invalidate_cache()
+                return
+                
+        raise ValueError(f"Asset with ticker {ticker} not found in portfolio")
+    
+    def update_asset(self, ticker: str, **updates) -> None:
+        """
+        Update an existing asset's properties.
+        
+        Args:
+            ticker: The ticker symbol of the asset to update
+            **updates: Key-value pairs of properties to update
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
+        for asset in self.assets:
+            if asset.ticker == ticker:
+                for key, value in updates.items():
+                    if hasattr(asset, key):
+                        setattr(asset, key, value)
+                    else:
+                        raise AttributeError(f"{key} is not a valid attribute of {asset.__class__.__name__}")
+                self._invalidate_cache()
+                return
+                
+        raise ValueError(f"Asset with ticker {ticker} not found in portfolio")
+    
+    def get_asset(self, ticker: str) -> Asset:
+        """
+        Get an asset by its ticker symbol.
+        
+        Args:
+            ticker: The ticker symbol of the asset to retrieve
+            
+        Returns:
+            Asset: The requested asset
+            
+        Raises:
+            ValueError: If no asset with the given ticker exists
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
+        for asset in self.assets:
+            if asset.ticker == ticker:
+                return asset
+        raise ValueError(f"Asset with ticker {ticker} not found in portfolio")
+    
+    def get_total_value(self) -> float:
+        """
+        Calculate the total market value of the portfolio.
+        
+        Returns:
+            float: The total market value of all assets in the portfolio
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
+        return sum(asset.current_value() for asset in self.assets)
+    
+    def get_asset_allocation(self) -> Dict[str, float]:
+        """Get the allocation of each asset as a percentage of the total portfolio.
+        
+        Returns:
+            Dict[str, float]: Dictionary mapping asset tickers to their allocation percentages
+        """
         total_value = self.get_total_value()
         if total_value == 0:
             return {}
             
-        sector_values = {}
-        for asset in self.assets.values():
-            if isinstance(asset, StockAsset):
-                sector = asset.sector or 'Unknown'
-                sector_values[sector] = sector_values.get(sector, 0) + asset.market_value
-            
-        return {s: (v / total_value) * 100 for s, v in sector_values.items()}
+        asset_allocation = {}
+        for asset in self.assets:
+            # Only include assets with positive value
+            asset_value = asset.current_value()
+            if asset_value > 0:
+                asset_allocation[asset.ticker] = (asset_value / total_value) * 100
+                
+        return asset_allocation
     
     def get_historical_returns(self, days: int = 30) -> Dict[str, List[float]]:
-        """
-        Simulate historical returns for the portfolio.
+        """Simulate historical returns for the portfolio.
+        
         In a real implementation, this would fetch actual historical data.
+        
+        Args:
+            days: Number of days of historical data to generate
+            
+        Returns:
+            Dict with 'dates' and 'returns' keys
         """
+        
         # This is a simplified simulation
         np.random.seed(42)  # For reproducibility
         daily_returns = np.random.normal(0.0005, 0.02, days)
         cumulative_returns = 100 * (1 + daily_returns).cumprod()
         
         return {
-            'dates': [(datetime.now() - datetime.timedelta(days=i)).strftime('%Y-%m-%d') 
+            'dates': [(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d') 
                      for i in range(days, 0, -1)],
             'returns': cumulative_returns.tolist()
         }
@@ -164,7 +403,22 @@ class Portfolio:
     
     @classmethod
     def from_json(cls: Type[T], json_str: str = None, filepath: str = None) -> T:
-        """Create a Portfolio instance from a JSON string or file."""
+        """Create a Portfolio instance from a JSON string or file.
+        
+        Args:
+            json_str: JSON string containing portfolio data
+            filepath: Path to a JSON file containing portfolio data
+            
+        Returns:
+            Portfolio: A new Portfolio instance
+            
+        Raises:
+            ValueError: If neither json_str nor filepath is provided
+            json.JSONDecodeError: If the JSON string is invalid
+            FileNotFoundError: If the specified file doesn't exist
+            
+        Time Complexity: O(n) where n is the number of assets
+        """
         if json_str is None and filepath is not None:
             with open(filepath, 'r') as f:
                 json_str = f.read()

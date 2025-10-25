@@ -297,6 +297,114 @@ class Analytics:
         return np.mean(active_returns) * np.sqrt(periods_per_year) / tracking_error
     
     @staticmethod
+    def get_portfolio_overview(self) -> dict:
+        """
+        Generate a comprehensive overview of the portfolio's performance and risk metrics.
+        
+        Returns:
+            dict: Dictionary containing portfolio overview metrics
+        """
+        # Calculate basic metrics
+        total_value = self.calculate_total_value()
+        expected_return = self.calculate_expected_return()
+        volatility = self.calculate_volatility()
+        sharpe_ratio = self.calculate_sharpe_ratio()
+        
+        # Calculate asset allocation
+        asset_allocation = {}
+        for asset in self.portfolio.assets:
+            weight = self.portfolio.weights.get(asset.ticker, 0)
+            asset_value = asset.current_value * (asset.quantity if hasattr(asset, 'quantity') else 1)
+            asset_allocation[asset.ticker] = {
+                'weight': weight,
+                'value': asset_value,
+                'type': asset.asset_type,
+                'sector': getattr(asset, 'sector', 'N/A'),
+                'pct_change': ((asset.current_price / asset.purchase_price) - 1) * 100
+            }
+        
+        # Calculate sector allocation (for stocks)
+        sector_allocation = {}
+        for asset in self.portfolio.assets:
+            if hasattr(asset, 'sector'):
+                sector = asset.sector or 'Other'
+                value = asset.current_value * (asset.quantity if hasattr(asset, 'quantity') else 1)
+                if sector in sector_allocation:
+                    sector_allocation[sector] += value
+                else:
+                    sector_allocation[sector] = value
+        
+        # Convert to percentages
+        if total_value > 0:
+            sector_allocation = {k: (v / total_value) * 100 for k, v in sector_allocation.items()}
+        
+        # Calculate risk metrics
+        returns = self.calculate_returns()
+        sortino_ratio = self.calculate_sortino_ratio()
+        max_drawdown = self.calculate_max_drawdown()
+        var_95 = self.calculate_var(confidence_level=0.95)
+        cvar_95 = self.calculate_cvar(confidence_level=0.95)
+        
+        # Prepare the overview dictionary
+        overview = {
+            'portfolio_summary': {
+                'total_value': total_value,
+                'total_invested': self.calculate_total_invested(),
+                'total_pnl': total_value - self.calculate_total_invested(),
+                'pct_return': (total_value / self.calculate_total_invested() - 1) * 100 \
+                    if self.calculate_total_invested() > 0 else 0,
+                'num_assets': len(self.portfolio.assets),
+                'num_stocks': len([a for a in self.portfolio.assets if a.asset_type == 'stock']),
+                'num_bonds': len([a for a in self.portfolio.assets if a.asset_type == 'bond']),
+            },
+            'performance_metrics': {
+                'expected_return': expected_return * 100,  # as percentage
+                'volatility': volatility * 100,  # as percentage
+                'sharpe_ratio': sharpe_ratio,
+                'sortino_ratio': sortino_ratio,
+                'max_drawdown': max_drawdown * 100,  # as percentage
+                'var_95': var_95 * 100,  # as percentage
+                'cvar_95': cvar_95 * 100,  # as percentage
+            },
+            'asset_allocation': asset_allocation,
+            'sector_allocation': sector_allocation,
+            'top_performers': self._get_top_performers(),
+            'bottom_performers': self._get_bottom_performers(),
+            'last_updated': datetime.utcnow().isoformat()
+        }
+        
+        return overview
+    
+    def _get_top_performers(self, n: int = 3) -> list:
+        """Get top n performing assets by return percentage"""
+        performers = []
+        for asset in self.portfolio.assets:
+            if hasattr(asset, 'purchase_price') and asset.purchase_price > 0:
+                pct_return = ((asset.current_price / asset.purchase_price) - 1) * 100
+                performers.append({
+                    'ticker': asset.ticker,
+                    'name': getattr(asset, 'name', ''),
+                    'pct_return': pct_return,
+                    'value': asset.current_value * (asset.quantity if hasattr(asset, 'quantity') else 1)
+                })
+        
+        return sorted(performers, key=lambda x: x['pct_return'], reverse=True)[:n]
+    
+    def _get_bottom_performers(self, n: int = 3) -> list:
+        """Get bottom n performing assets by return percentage"""
+        performers = []
+        for asset in self.portfolio.assets:
+            if hasattr(asset, 'purchase_price') and asset.purchase_price > 0:
+                pct_return = ((asset.current_price / asset.purchase_price) - 1) * 100
+                performers.append({
+                    'ticker': asset.ticker,
+                    'name': getattr(asset, 'name', ''),
+                    'pct_return': pct_return,
+                    'value': asset.current_value * (asset.quantity if hasattr(asset, 'quantity') else 1)
+                })
+        
+        return sorted(performers, key=lambda x: x['pct_return'])[:n]
+    
     def calculate_performance_metrics(
         returns: np.ndarray,
         benchmark_returns: Optional[np.ndarray] = None,

@@ -61,16 +61,15 @@ class RiskSimulator:
         if confidence_levels is None:
             confidence_levels = [0.90, 0.95, 0.99]
             
-        # Get asset returns and weights
-        assets = list(self.portfolio.assets.values())
-        n_assets = len(assets)
-        
-        if n_assets == 0:
+        # Get assets and check if portfolio is empty
+        if not self.portfolio.assets:
             raise ValueError("Portfolio has no assets")
             
+        n_assets = len(self.portfolio.assets)
+        
         # Calculate weights based on current market values
         total_value = self.portfolio.get_total_value()
-        weights = np.array([asset.market_value / total_value for asset in assets])
+        weights = np.array([asset.current_value() / total_value for asset in self.portfolio.assets])
         
         # In a real implementation, you would use historical returns and covariances
         # For this example, we'll use random returns with some correlation
@@ -81,19 +80,35 @@ class RiskSimulator:
         mean_returns = np.array([0.001] * n_assets)  # Daily returns
         cov_matrix = np.eye(n_assets) * 0.02  # Covariance matrix (simplified)
         
-        # Generate correlated random returns
-        L = np.linalg.cholesky(cov_matrix)
-        uncorrelated_returns = np.random.normal(0, 1, (time_horizon, n_assets, num_simulations))
-        correlated_returns = np.tensordot(L, uncorrelated_returns, axes=1)
-        correlated_returns = np.transpose(correlated_returns, (1, 0, 2))
+        # Generate correlated returns using Cholesky decomposition
+        try:
+            L = np.linalg.cholesky(cov_matrix)
+        except np.linalg.LinAlgError:
+            # If Cholesky decomposition fails (matrix not positive definite),
+            # use a diagonal covariance matrix as fallback
+            L = np.diag(np.diag(cov_matrix) ** 0.5)
         
-        # Add mean returns
-        simulated_returns = mean_returns + correlated_returns
+        # Generate uncorrelated random returns
+        uncorrelated_returns = np.random.normal(
+            loc=0,  # We'll add the mean later
+            scale=1.0,  # Standard normal
+            size=(num_simulations, time_horizon, n_assets)
+        )
+        
+        # Transform to correlated returns
+        # Reshape for matrix multiplication: (n_sims * time_horizon, n_assets) x (n_assets, n_assets)
+        reshaped_returns = uncorrelated_returns.reshape(-1, n_assets)
+        correlated_returns = np.dot(reshaped_returns, L.T)
+        
+        # Reshape back and add the mean
+        correlated_returns = correlated_returns.reshape(num_simulations, time_horizon, n_assets)
+        correlated_returns = mean_returns + correlated_returns * 0.02  # Scale by volatility
+        correlated_returns = np.transpose(correlated_returns, (1, 0, 2))
         
         # Calculate portfolio returns for each simulation
         portfolio_returns = np.zeros((time_horizon, num_simulations))
         for t in range(time_horizon):
-            portfolio_returns[t] = np.dot(weights, simulated_returns[t])
+            portfolio_returns[t] = np.dot(correlated_returns[t], weights)
         
         # Calculate terminal values (1 + r1) * (1 + r2) * ... * (1 + rT) - 1
         terminal_returns = np.prod(1 + portfolio_returns, axis=0) - 1
@@ -139,8 +154,8 @@ class RiskSimulator:
         Args:
             scenarios: Dictionary of scenarios with asset returns under stress
                       Example: {
-                          'market_crash': {'AAPL': -0.3, 'MSFT': -0.25, ...},
-                          'recession': {'AAPL': -0.15, 'MSFT': -0.10, ...}
+                          'market_crash': {'VTI': -0.3, 'VXUS': -0.25, ...},
+                          'recession': {'VTI': -0.15, 'VXUS': -0.10, ...}
                       }
                       
         Returns:
@@ -149,11 +164,11 @@ class RiskSimulator:
         if scenarios is None:
             # Default scenarios if none provided
             scenarios = {
-                'market_crash': {asset.symbol: -0.30 for asset in self.portfolio.assets.values()},
-                'mild_recession': {asset.symbol: -0.15 for asset in self.portfolio.assets.values()},
+                'market_crash': {asset.ticker: -0.30 for asset in self.portfolio.assets},
+                'mild_recession': {asset.ticker: -0.15 for asset in self.portfolio.assets},
                 'interest_rate_hike': {
-                    asset.symbol: -0.10 if isinstance(asset, BondAsset) else -0.05 
-                    for asset in self.portfolio.assets.values()
+                    asset.ticker: -0.10 if getattr(asset, 'asset_type', '') == 'bond' else -0.05 
+                    for asset in self.portfolio.assets
                 }
             }
         
@@ -163,10 +178,10 @@ class RiskSimulator:
         for scenario_name, asset_returns in scenarios.items():
             scenario_loss = 0.0
             
-            for asset in self.portfolio.assets.values():
-                if asset.symbol in asset_returns:
-                    return_pct = asset_returns[asset.symbol]
-                    scenario_loss += asset.market_value * return_pct
+            for asset in self.portfolio.assets:
+                if asset.ticker in asset_returns:
+                    return_pct = asset_returns[asset.ticker]
+                    scenario_loss += asset.current_value() * return_pct
             
             results[scenario_name] = {
                 'dollar_impact': scenario_loss,

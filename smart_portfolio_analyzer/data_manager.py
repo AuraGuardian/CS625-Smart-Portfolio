@@ -1,11 +1,13 @@
 import os
 import json
+import time
 import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, List, Optional, Union, Any, Tuple
 import requests
 from urllib.parse import urljoin
+from polygon import RESTClient
+import yfinance as yf  # Keep as fallback
 
 from .portfolio import Portfolio
 from .assets import StockAsset, BondAsset
@@ -21,12 +23,16 @@ class DataManager:
         Initialize the DataManager.
         
         Args:
-            api_key: API key for financial data services (e.g., Alpha Vantage, IEX Cloud)
+            api_key: Polygon.io API key (required for Polygon data)
             cache_dir: Directory to store cached data
         """
+        if not api_key:
+            raise ValueError("Polygon.io API key is required. Get one at https://polygon.io/")
+            
         self.api_key = api_key
         self.cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
+        self.polygon_client = RESTClient(api_key=api_key)
     
     def get_historical_prices(
         self, 
@@ -35,18 +41,18 @@ class DataManager:
         end_date: str = None,
         period: str = '1y',
         interval: str = '1d',
-        source: str = 'yfinance'
+        source: str = 'polygon'
     ) -> Dict[str, pd.DataFrame]:
         """
         Get historical price data for multiple symbols.
         
         Args:
             symbols: List of ticker symbols
-            start_date: Start date in 'YYYY-MM-DD' format
+            start_date: Start date in 'YYYY-MM-DD' format (default: 1 year ago)
             end_date: End date in 'YYYY-MM-DD' format (default: today)
-            period: Time period (e.g., '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max')
-            interval: Data interval ('1d', '1wk', '1mo')
-            source: Data source ('yfinance', 'alpha_vantage', 'iex')
+            period: Time period if start_date not provided (e.g., '1y', '2y', '5y')
+            interval: Data interval ('1d', '1w', '1m' for daily, weekly, monthly)
+            source: Data source ('polygon', 'yfinance' as fallback)
             
         Returns:
             Dictionary mapping symbols to DataFrames with historical data
@@ -54,14 +60,34 @@ class DataManager:
         if not symbols:
             return {}
             
-        if source == 'yfinance':
+        # Set default dates if not provided
+        end_date = end_date or datetime.now().strftime('%Y-%m-%d')
+        if not start_date:
+            if period == '1y':
+                # Default to January 1, 2025
+                start_date = '2025-01-01'
+            elif period.endswith('y'):
+                years = int(period[:-1])
+                start_date = (datetime.now() - timedelta(days=365*years)).strftime('%Y-%m-%d')
+            else:
+                start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        
+        # Convert interval to Polygon format
+        polygon_interval = 'day'  # default
+        if interval == '1w':
+            polygon_interval = 'week'
+        elif interval == '1m':
+            polygon_interval = 'month'
+            
+        try:
+            if source == 'polygon':
+                return self._get_polygon_data(symbols, start_date, end_date, polygon_interval)
+            else:
+                # Fallback to yfinance if specified or if Polygon fails
+                return self._get_yfinance_data(symbols, start_date, end_date, period, interval)
+        except Exception as e:
+            print(f"Error with {source} data source, falling back to yfinance: {str(e)}")
             return self._get_yfinance_data(symbols, start_date, end_date, period, interval)
-        elif source == 'alpha_vantage' and self.api_key:
-            return self._get_alpha_vantage_data(symbols, start_date, end_date, interval)
-        elif source == 'iex' and self.api_key:
-            return self._get_iex_data(symbols, start_date, end_date)
-        else:
-            raise ValueError(f"Unsupported data source or missing API key: {source}")
     
     def _get_yfinance_data(
         self, 
@@ -98,6 +124,95 @@ class DataManager:
                 
             except Exception as e:
                 print(f"Error fetching data for {symbol}: {str(e)}")
+        
+        return data
+    
+    def _get_polygon_data(
+        self,
+        symbols: List[str],
+        start_date: str,
+        end_date: str,
+        interval: str = 'day'
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Get historical data from Polygon.io.
+        
+        Args:
+            symbols: List of ticker symbols
+            start_date: Start date in 'YYYY-MM-DD' format
+            end_date: End date in 'YYYY-MM-DD' format
+            interval: Data interval ('day', 'week', 'month', 'quarter', 'year')
+            
+        Returns:
+            Dictionary mapping symbols to DataFrames with historical data
+        """
+        data = {}
+        
+        for symbol in symbols:
+            try:
+                # Check cache first
+                cache_file = os.path.join(self.cache_dir, f"{symbol}_{start_date}_{end_date}_{interval}.pkl")
+                if os.path.exists(cache_file):
+                    # Load from cache if not expired (1 day)
+                    cache_time = os.path.getmtime(cache_file)
+                    if (time.time() - cache_time) < 86400:  # 24 hours in seconds
+                        data[symbol] = pd.read_pickle(cache_file)
+                        continue
+                
+                # Ensure dates are in the past
+                today = datetime.now().date()
+                end_date_obj = min(datetime.strptime(end_date, '%Y-%m-%d').date(), today)
+                end_date = end_date_obj.strftime('%Y-%m-%d')
+                
+                # Fetch data from Polygon
+                bars = []
+                
+                # Try to get aggregate bars
+                try:
+                    for bar in self.polygon_client.list_aggs(
+                        ticker=symbol,
+                        multiplier=1,
+                        timespan=interval,
+                        from_=start_date,
+                        to=end_date,
+                        limit=50000  # Maximum allowed by Polygon
+                    ):
+                        bars.append({
+                            'date': datetime.utcfromtimestamp(bar.timestamp / 1000).strftime('%Y-%m-%d'),
+                            'open': bar.open,
+                            'high': bar.high,
+                            'low': bar.low,
+                            'close': bar.close,
+                            'volume': bar.volume,
+                            'vwap': bar.vwap if hasattr(bar, 'vwap') else None,
+                            'transactions': bar.transactions if hasattr(bar, 'transactions') else None
+                        })
+                except Exception as e:
+                    print(f"Error fetching aggregate bars for {symbol}: {str(e)}")
+                
+                if bars:
+                    df = pd.DataFrame(bars)
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    
+                    # Cache the data
+                    df.to_pickle(cache_file)
+                    data[symbol] = df
+                
+            except Exception as e:
+                print(f"Error fetching Polygon data for {symbol}: {str(e)}")
+                # Try yfinance as fallback
+                try:
+                    fallback_data = self._get_yfinance_data(
+                        [symbol], 
+                        start_date, 
+                        end_date,
+                        interval='1d'
+                    )
+                    if symbol in fallback_data:
+                        data[symbol] = fallback_data[symbol]
+                except Exception as e2:
+                    print(f"Fallback to yfinance also failed for {symbol}: {str(e2)}")
         
         return data
     
