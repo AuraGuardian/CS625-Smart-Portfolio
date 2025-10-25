@@ -13,12 +13,21 @@ from smart_portfolio_analyzer import (
     PortfolioAnalyzer
 )
 
-# Import configuration
+# Initialize DataManager with Streamlit secrets
 try:
-    from config import POLYGON_API_KEY
-    DATA_MANAGER = DataManager(api_key=POLYGON_API_KEY)
-except (ImportError, ValueError) as e:
-    st.error("Error initializing DataManager. Please ensure you have a valid Polygon.io API key in config.py")
+    # Try to get API key from Streamlit secrets first
+    if 'POLYGON_API_KEY' in st.secrets:
+        DATA_MANAGER = DataManager(api_key=st.secrets['POLYGON_API_KEY'])
+    # Fallback to config.py for local development
+    else:
+        try:
+            from config import POLYGON_API_KEY
+            DATA_MANAGER = DataManager(api_key=POLYGON_API_KEY)
+        except (ImportError, ValueError) as e:
+            st.error("Error initializing DataManager. Please ensure you have a valid Polygon.io API key in Streamlit secrets or config.py")
+            st.stop()
+except Exception as e:
+    st.error(f"Error initializing DataManager: {str(e)}")
     st.stop()
 
 # Page config
