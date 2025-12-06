@@ -10,4 +10,4 @@ streamlit>=1.13.0
 plotly>=5.5.0
 polygon-api-client>=1.13.3
 pip install pystan==2.19.1.1
-pip install prophet
+pip install prophet>=1.1.4
