@@ -13,7 +13,7 @@ polygon-api-client>=1.13.3
 
 # Prophet dependencies
 pystan>=2.19.1.1,<3.0.0
-prophet>=1.1.4
+prophet>=1.1.2
 convertdate>=2.4.0
 lunarcalendar>=0.0.9
 holidays>=0.24
