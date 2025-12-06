@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
+from prophet import Prophet
+from prophet.plot import plot_plotly, plot_components_plotly
 from smart_portfolio_analyzer import (
     Portfolio, 
     StockAsset, 
@@ -74,11 +76,13 @@ st.title("📊 Smart Portfolio Analyzer & Risk Simulator")
 st.markdown("---")
 
 # Tab layout
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📋 Portfolio Overview", 
     "📈 Performance", 
-    "📊 Risk Analysis", 
-    "➕ Add Assets"
+    "📊 Risk Analysis",
+    "➕ Add Assets",
+    "📈 Efficient Frontier",
+    "🔮 Price Forecast"  # New tab for Prophet forecasting
 ])
 
 # Tab 1: Portfolio Overview
@@ -497,6 +501,458 @@ with tab4:
                 
             except Exception as e:
                 st.error(f"Error adding asset: {str(e)}")
+
+# Tab 5: Efficient Frontier
+with tab5:
+    st.header("📈 Efficient Frontier")
+    
+    if not st.session_state.portfolio.assets:
+        st.warning("Please add assets to your portfolio to view the efficient frontier.")
+    else:
+        # Get historical returns for all assets
+        symbols = [asset.ticker for asset in st.session_state.portfolio.assets]
+        try:
+            # Get 1 year of historical data
+            with st.spinner("Calculating efficient frontier..."):
+                # Get historical prices for all assets in the portfolio
+                symbols = [asset.ticker for asset in st.session_state.portfolio.assets]
+                
+                # Get 1 year of historical data
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=365)
+                
+                # Fetch historical data
+                historical_data = st.session_state.data_manager.get_historical_prices(
+                    symbols=symbols,
+                    start_date=start_date.strftime('%Y-%m-%d'),
+                    end_date=end_date.strftime('%Y-%m-%d')
+                )
+                
+                if not historical_data:
+                    st.error("No historical data returned. Please check your data source.")
+                    st.stop()
+                
+                # Get the first ticker's data
+                first_ticker = next(iter(historical_data))
+                first_value = historical_data[first_ticker]
+                
+                # Handle case where values are DataFrames
+                if isinstance(first_value, pd.DataFrame):
+                    # Find the close column (case insensitive)
+                    close_col = next((col for col in first_value.columns if str(col).lower() == 'close'), None)
+                    
+                    if close_col is not None:
+                        # Extract close prices from each DataFrame
+                        close_prices = {
+                            ticker: df[close_col].values 
+                            for ticker, df in historical_data.items()
+                            if isinstance(df, pd.DataFrame) and close_col in df.columns
+                        }
+                        
+                        if close_prices:
+                            prices_df = pd.DataFrame(close_prices)
+                        else:
+                            st.error("No valid price data found in the DataFrames")
+                            st.stop()
+                    else:
+                        st.error(f"No 'close' column found in the DataFrames. Available columns: {first_value.columns.tolist()}")
+                        st.stop()
+                else:
+                    st.error(f"Unsupported data type: {type(first_value).__name__}")
+                    st.stop()
+                
+                # Ensure we have numeric data
+                prices_df = prices_df.apply(pd.to_numeric, errors='coerce')
+                
+                # Drop rows with any missing values
+                prices_df = prices_df.dropna(how='any')
+                
+                if len(prices_df) < 2:
+                    st.error("Not enough data points to calculate returns. Try with a longer time period.")
+                    st.stop()
+                
+                # Calculate daily returns
+                returns = prices_df.pct_change().dropna()
+                
+                if len(returns) < 2:
+                    st.error("Not enough data to calculate returns. Try with a longer time period.")
+                    st.stop()
+                
+                # Calculate expected returns (annualized)
+                expected_returns = returns.mean() * 252
+                
+                # Calculate covariance matrix (annualized)
+                cov_matrix = returns.cov() * 252
+                
+                # Ensure we have valid data
+                if expected_returns.isna().any() or cov_matrix.isna().any().any():
+                    st.error("Error: Invalid data in returns or covariance matrix calculation.")
+                    st.write("Expected returns:", expected_returns)
+                    st.write("Covariance matrix:", cov_matrix)
+                    st.stop()
+                
+                # Number of portfolios to simulate
+                num_portfolios = 10000
+            
+            # Store results
+            results = np.zeros((3, num_portfolios))
+            weights_record = []
+            
+            # Generate random portfolios
+            for i in range(num_portfolios):
+                # Random weights
+                weights = np.random.random(len(symbols))
+                weights /= np.sum(weights)
+                weights_record.append(weights)
+                
+                # Portfolio return and volatility
+                portfolio_return = np.sum(weights * expected_returns)
+                portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+                
+                # Store results
+                results[0, i] = portfolio_volatility
+                results[1, i] = portfolio_return
+                results[2, i] = results[1, i] / (results[0, i] + 1e-10)  # Sharpe ratio (with epsilon to avoid division by zero)
+                
+                # Get current portfolio weights
+                current_weights = np.array([
+                    asset.current_value() / st.session_state.portfolio.get_total_value() 
+                    for asset in st.session_state.portfolio.assets
+                ])
+                
+            # Calculate current portfolio metrics
+            current_weights = np.array([
+                asset.current_value() / st.session_state.portfolio.get_total_value() 
+                for asset in st.session_state.portfolio.assets
+            ])
+            
+            current_return = np.sum(current_weights * expected_returns)
+            current_volatility = np.sqrt(np.dot(current_weights.T, np.dot(cov_matrix, current_weights)))
+            current_sharpe = current_return / (current_volatility + 1e-10)
+            
+            # Find optimal portfolio (max Sharpe ratio)
+            max_sharpe_idx = np.argmax(results[2])
+            optimal_weights = weights_record[max_sharpe_idx]
+            optimal_return = results[1, max_sharpe_idx]
+            optimal_volatility = results[0, max_sharpe_idx]
+            optimal_sharpe = results[2, max_sharpe_idx]
+            
+            # Create efficient frontier plot
+            fig = go.Figure()
+            
+            # Plot random portfolios
+            fig.add_trace(go.Scatter(
+                x=results[0,:], 
+                y=results[1,:], 
+                mode='markers',
+                name='Random Portfolios',
+                marker=dict(
+                    color=results[2,:],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title='Sharpe Ratio')
+                )
+            ))
+            
+            # Plot current portfolio
+            fig.add_trace(go.Scatter(
+                x=[current_volatility],
+                y=[current_return],
+                mode='markers',
+                name='Current Portfolio',
+                marker=dict(
+                    color='red',
+                    size=12,
+                    line=dict(color='black', width=2)
+                )
+            ))
+            
+            # Plot optimal portfolio
+            fig.add_trace(go.Scatter(
+                x=[optimal_volatility],
+                y=[optimal_return],
+                mode='markers',
+                name='Optimal Portfolio',
+                marker=dict(
+                    color='green',
+                    size=12,
+                    symbol='star',
+                    line=dict(color='black', width=2)
+                )
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title='Efficient Frontier',
+                xaxis_title='Annualized Volatility',
+                yaxis_title='Annualized Return',
+                showlegend=True,
+                height=600,
+                template='plotly_white'
+            )
+            
+            # Display the plot
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Display optimal weights
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Optimal Portfolio Weights")
+                optimal_weights_df = pd.DataFrame({
+                    'Asset': symbols,
+                    'Optimal Weight': [f"{w*100:.2f}%" for w in optimal_weights]
+                })
+                st.table(optimal_weights_df)
+                
+                st.metric("Expected Return", f"{optimal_return*100:.2f}%")
+                st.metric("Expected Volatility", f"{optimal_volatility*100:.2f}%")
+                st.metric("Sharpe Ratio", f"{optimal_sharpe:.2f}")
+            
+            with col2:
+                st.subheader("Current Portfolio Weights")
+                current_weights_df = pd.DataFrame({
+                    'Asset': symbols,
+                    'Current Weight': [f"{w*100:.2f}%" for w in current_weights]
+                })
+                st.table(current_weights_df)
+                
+                st.metric("Current Return", f"{current_return*100:.2f}%")
+                st.metric("Current Volatility", f"{current_volatility*100:.2f}%")
+                st.metric("Current Sharpe Ratio", f"{current_sharpe:.2f}")
+                
+        except Exception as e:
+            st.error(f"Error calculating efficient frontier: {str(e)}")
+            import traceback
+            st.text(traceback.format_exc())
+
+# Tab 6: Portfolio Value Forecasting
+with tab6:
+    st.header("🔮 Portfolio Value Forecast")
+    
+    if not st.session_state.portfolio.assets:
+        st.warning("Please add assets to your portfolio to use the forecasting tool.")
+    else:
+        # Date range selection
+        col1, col2 = st.columns(2)
+        with col1:
+            history_years = st.slider("Years of historical data:", 1, 10, 5)
+        with col2:
+            forecast_days = st.slider("Days to forecast:", 30, 365, 90)
+        
+        if st.button("Generate Portfolio Forecast"):
+            st.session_state.show_forecast = True
+            st.session_state.forecast_data = None  # Clear previous forecast data
+            
+        if st.session_state.get('show_forecast', False):
+            try:
+                # Get historical data for all assets
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=history_years*365)
+                
+                with st.spinner("Calculating historical portfolio values..."):
+                    # Get historical prices for all assets
+                    symbols = [asset.ticker for asset in st.session_state.portfolio.assets]
+                    historical_prices_dict = st.session_state.data_manager.get_historical_prices(
+                        symbols=symbols,
+                        start_date=start_date.strftime('%Y-%m-%d'),
+                        end_date=end_date.strftime('%Y-%m-%d'),
+                        interval='1d'
+                    )
+                    
+                    if not historical_prices_dict:
+                        st.error("No historical data returned. Please check your API key and try again.")
+                        st.stop()
+                    
+                    # Check if we have any valid DataFrames
+                    valid_data = False
+                    price_dfs = []
+                    
+                    for ticker, df in historical_prices_dict.items():
+                        if df is not None and not df.empty:
+                            try:
+                                df = df.rename(columns={'close': ticker})
+                                if ticker in df.columns:  # Make sure the column was renamed successfully
+                                    price_dfs.append(df[[ticker]])
+                                    valid_data = True
+                            except Exception as e:
+                                st.warning(f"Error processing data for {ticker}: {str(e)}")
+                    
+                    if not valid_data:
+                        st.error("No valid price data available for the selected assets.")
+                        st.stop()
+                    
+                    if not price_dfs:
+                        st.error("No valid price data available for the selected assets.")
+                        st.stop()
+                        
+                    # Combine all price data into a single DataFrame
+                    historical_prices = pd.concat(price_dfs, axis=1)
+                    
+                    # Calculate portfolio value over time
+                    portfolio_values = pd.DataFrame(index=historical_prices.index)
+                    
+                    # Calculate values for each asset
+                    for asset in st.session_state.portfolio.assets:
+                        if asset.ticker in historical_prices.columns:
+                            shares = asset.quantity
+                            portfolio_values[asset.ticker] = historical_prices[asset.ticker] * shares
+                    
+                    # Sum up all asset values to get total portfolio value
+                    portfolio_values['total'] = portfolio_values.sum(axis=1)
+                    
+                    # Prepare data for Prophet (only use the total portfolio value)
+                    df = portfolio_values[['total']].reset_index()
+                    df = df.rename(columns={'date': 'ds', 'total': 'y'})
+                    
+                    # Fit Prophet model
+                    with st.spinner("Training forecasting model..."):
+                        model = Prophet(
+                            daily_seasonality=True,
+                            weekly_seasonality=True,
+                            yearly_seasonality=True,
+                            seasonality_mode='multiplicative'
+                        )
+                        model.fit(df)
+                        
+                        # Create future dates for forecasting
+                        future = model.make_future_dataframe(periods=forecast_days)
+                        
+                        # Generate forecast
+                        forecast = model.predict(future)
+                    
+                    # Calculate and show only the total portfolio metrics
+                    current_value = df['y'].iloc[-1]
+                    forecasted_value = forecast['yhat'].iloc[-1]
+                    change_pct = ((forecasted_value - current_value) / current_value) * 100
+                    
+                    # Display metrics in columns
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Current Portfolio Value", f"${current_value:,.2f}")
+                    with col2:
+                        st.metric(
+                            f"Forecasted Value in {forecast_days} days",
+                            f"${forecasted_value:,.2f}",
+                            delta=f"{change_pct:.2f}%"
+                        )
+                    
+                    # Store forecast data in session state
+                    st.session_state.forecast_data = {
+                        'model': model,
+                        'forecast': forecast,
+                        'df': df,
+                        'end_date': end_date,
+                        'forecast_days': forecast_days
+                    }
+                    
+                # Display the forecast (only once)
+                if 'forecast_data' in st.session_state:
+                    model = st.session_state.forecast_data['model']
+                    forecast = st.session_state.forecast_data['forecast']
+                    df = st.session_state.forecast_data['df']
+                    end_date = st.session_state.forecast_data['end_date']
+                    forecast_days = st.session_state.forecast_data['forecast_days']
+                    
+                    # Show forecast components
+                    st.subheader("Forecast Components")
+                    fig_components = plot_components_plotly(model, forecast)
+                    st.plotly_chart(fig_components, use_container_width=True)
+                    
+                    # Show forecast plot
+                    st.subheader("Portfolio Value Forecast")
+                    fig_forecast = plot_plotly(model, forecast)
+                    
+                    # Add actual data points
+                    fig_forecast.add_scatter(
+                        x=df['ds'],
+                        y=df['y'],
+                        mode='markers',
+                        name='Actual',
+                        marker=dict(color='red', size=4)
+                    )
+                    
+                    # Add confidence interval
+                    fig_forecast.add_trace(go.Scatter(
+                        x=pd.concat([forecast['ds'], forecast['ds']][::-1]),
+                        y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower']][::-1]),
+                        fill='toself',
+                        fillcolor='rgba(0,100,80,0.2)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        showlegend=True,
+                        name='Confidence Interval'
+                    ))
+                    
+                    fig_forecast.update_layout(
+                        yaxis_title="Portfolio Value ($)",
+                        xaxis_title="Date",
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+                    
+                    # Show forecast table
+                    st.subheader("Forecast Details")
+                    forecast_display = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+                    forecast_display.columns = ['Date', 'Forecasted Value', 'Lower Bound', 'Upper Bound']
+                    forecast_display['Date'] = forecast_display['Date'].dt.strftime('%Y-%m-%d')
+                    forecast_display[['Forecasted Value', 'Lower Bound', 'Upper Bound']] = \
+                        forecast_display[['Forecasted Value', 'Lower Bound', 'Upper Bound']].round(2)
+                    
+                    st.dataframe(forecast_display.tail(10))
+                    
+                    # Add download button for forecast data
+                    import uuid
+                    csv = forecast_display.to_csv(index=False)
+                    st.download_button(
+                        label="Download Forecast Data",
+                        data=csv,
+                        file_name=f"portfolio_forecast_{end_date.strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        key=f"download_btn_{end_date.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"  # Truly unique key
+                    )
+                    
+                    # Add actual data points
+                    fig_forecast.add_scatter(
+                        x=df['ds'],
+                        y=df['y'],
+                        mode='markers',
+                        name='Actual',
+                        marker=dict(color='red', size=4)
+                    )
+                    
+                    # Add confidence interval
+                    fig_forecast.add_trace(go.Scatter(
+                        x=pd.concat([forecast['ds'], forecast['ds']][::-1]),
+                        y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower']][::-1]),
+                        fill='toself',
+                        fillcolor='rgba(0,100,80,0.2)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        showlegend=True,
+                        name='Confidence Interval'
+                    ))
+                    
+                    # Update layout
+                    fig_forecast.update_layout(
+                        yaxis_title="Portfolio Value ($)",
+                        xaxis_title="Date",
+                        hovermode='x unified'
+                    )
+                    
+                    # Add download button for forecast data
+                    csv = forecast_display.to_csv(index=False)
+                    st.download_button(
+                        label="Download Forecast Data",
+                        data=csv,
+                        file_name=f"portfolio_forecast_{end_date.strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        key=f"download_btn_{end_date.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"  # Truly unique key
+                    )
+                        
+            except Exception as e:
+                st.error(f"Error generating portfolio forecast: {str(e)}")
+                import traceback
+                st.text(traceback.format_exc())
 
 # Run the app
 if __name__ == "__main__":
