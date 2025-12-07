@@ -25,7 +25,7 @@ alpha_vantage==2.3.1
 # Time series forecasting
 prophet==1.1.5
 holidays==0.86
-pystan==2.19.1.1
+#pystan==2.19.1.1
 
 # Data processing
 ta==0.10.2  # Technical analysis library
