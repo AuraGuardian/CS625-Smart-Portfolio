@@ -1,5 +1,12 @@
 import streamlit as st
 
+# Page config must be the first Streamlit command
+st.set_page_config(
+    page_title="SPARS - Smart Portfolio Analysis and Risk System",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # Fix for Material Icons and BaseWeb components
 st.markdown("""
     <style>
@@ -135,13 +142,6 @@ except Exception as e:
     st.error(f"Error initializing DataManager: {str(e)}")
     st.error("Please ensure you have a valid Polygon.io API key in Streamlit secrets or .env file")
     st.stop()
-
-# Page config
-st.set_page_config(
-    page_title="SPARS - Smart Portfolio Analysis and Risk System",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Add logo to sidebar with better styling
 import base64
