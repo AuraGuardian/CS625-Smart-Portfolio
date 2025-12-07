@@ -1,6 +1,5 @@
+# Set page config must be the very first Streamlit command
 import streamlit as st
-
-# Page config must be the first Streamlit command
 st.set_page_config(
     page_title="SPARS - Smart Portfolio Analysis and Risk System",
     layout="wide",
