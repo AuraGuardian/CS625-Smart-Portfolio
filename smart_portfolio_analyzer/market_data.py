@@ -1,5 +1,5 @@
 """
-Market Data Module for Smart Portfolio Analyzer
+Market Data Module for SPARS (Smart Portfolio Analysis and Risk System)
 Handles fetching real-time and historical market data from Polygon.io
 """
 import os

@@ -10,7 +10,7 @@ from polygon import RESTClient
 import yfinance as yf  # Keep as fallback
 
 from .portfolio import Portfolio
-from .assets import StockAsset, BondAsset
+from .assets import StockAsset, CryptoAsset, ForexAsset, OptionAsset
 
 
 class DataManager:
@@ -372,23 +372,95 @@ class DataManager:
         
         return pd.Series()
     
-    def get_risk_free_rate(self) -> float:
+    def get_risk_free_rate(self, target_date: date = None) -> float:
         """
-        Get the current risk-free rate (e.g., 10-year Treasury yield).
+        Get the risk-free rate using the 10-year US Treasury yield.
         
+        Args:
+            target_date: Date to get the rate for (defaults to most recent available)
+            
         Returns:
             Annualized risk-free rate as a decimal (e.g., 0.05 for 5%)
         """
-        # In a real implementation, you would fetch this from a reliable source
-        # This is a simplified example
+        if target_date is None:
+            target_date = date.today()
+            
+        # Try to get from Treasury website first
+        try:
+            year = target_date.year
+            cache_file = os.path.join(self.cache_dir, f'treasury_rates_{year}.json')
+            
+            # Try to get from cache first
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        rates = json.load(f)
+                    if str(target_date) in rates:
+                        rate = float(rates[str(target_date)]) / 100  # Convert percentage to decimal
+                        print(f"Using cached 10-year Treasury yield for {target_date}: {rate*100:.2f}%")
+                        return rate
+                except (json.JSONDecodeError, KeyError):
+                    pass  # Cache is invalid, will fetch fresh data
+                    
+            # If not in cache or cache is invalid, fetch from Treasury website
+            url = f'https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value={year}'
+            
+            response = requests.get(url)
+            response.raise_for_status()
+            
+            # Parse XML response
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
+            
+            # Namespace handling for the XML response
+            ns = {'d': 'http://www.sdmx.org/resources/sdmxml/schemas/v2_1/data/generic'}
+            
+            rates_dict = {}
+            
+            # Find all series with 10-year constant maturity
+            for series in root.findall(".//d:Series[d:SeriesKey/d:Value[@value='10']]", namespaces=ns):
+                date_str = series.find("d:Attributes/d:Value[@concept='NEW_DATE']", namespaces=ns)
+                rate = series.find("d:Obs/d:ObsValue", namespaces=ns)
+                
+                if date_str is not None and rate is not None and 'value' in date_str.attrib and 'value' in rate.attrib:
+                    try:
+                        rate_date = datetime.strptime(date_str.attrib['value'], '%Y-%m-%d').date()
+                        rate_value = float(rate.attrib['value'])
+                        rates_dict[str(rate_date)] = rate_value
+                    except (ValueError, AttributeError):
+                        continue
+            
+            # Save to cache
+            with open(cache_file, 'w') as f:
+                json.dump(rates_dict, f)
+                
+            # Return the rate for the target date, or the most recent available rate
+            if str(target_date) in rates_dict:
+                return rates_dict[str(target_date)] / 100
+            elif rates_dict:  # If we have rates but not for the exact date, return the most recent
+                most_recent_date = max(rates_dict.keys())
+                rate = rates_dict[most_recent_date] / 100
+                print(f"Using most recent 10-year Treasury yield ({most_recent_date}): {rate*100:.2f}%")
+                return rate
+                
+        except Exception as e:
+            print(f"Warning: Could not fetch 10-year Treasury rate from Treasury website: {str(e)}")
+            # Fall through to Yahoo Finance fallback
+        
+        # Fallback to Yahoo Finance if Treasury website fails
         try:
             # Try to get the 10-year Treasury yield from Yahoo Finance
-            ticker = yf.Ticker('^TNX')
+            ticker = yf.Ticker('^TNX')  # ^TNX is the ticker for 10-year Treasury yield
             hist = ticker.history(period='1d')
-            if not hist.empty:
-                return hist['Close'].iloc[-1] / 100.0  # Convert from percentage to decimal
-        except:
-            pass
-        
-        # Default fallback value (e.g., 2.5%)
-        return 0.025
+            
+            if not hist.empty and 'Close' in hist.columns and not hist['Close'].empty:
+                rate = hist['Close'].iloc[-1] / 100.0  # Convert from percentage to decimal
+                print(f"Fetched current 10-year Treasury yield from Yahoo Finance: {rate*100:.2f}%")
+                return rate
+                
+            print("Warning: No data returned for 10-year Treasury yield, using fallback")
+            return 0.04  # Fallback to 4%
+            
+        except Exception as e:
+            print(f"Error fetching 10-year Treasury yield: {str(e)}")
+            return 0.04  # Fallback to 4%

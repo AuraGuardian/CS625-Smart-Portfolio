@@ -1,5 +1,5 @@
 """
-Market Data Demo for Smart Portfolio Analyzer
+Market Data Demo for SPARS (Smart Portfolio Analysis and Risk System)
 
 This script demonstrates how to use the market data functionality to:
 1. Load a sample portfolio

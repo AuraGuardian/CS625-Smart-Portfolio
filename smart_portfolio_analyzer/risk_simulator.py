@@ -247,3 +247,47 @@ class RiskSimulator:
         peak = np.maximum.accumulate(cumulative)
         drawdowns = (cumulative - peak) / (1 + peak)
         return np.min(drawdowns) if len(drawdowns) > 0 else 0.0
+        
+    def calculate_historical_var(self, returns: np.ndarray, confidence_level: float = 0.95) -> float:
+        """
+        Calculate Historical Value at Risk (VaR) from a series of returns.
+        
+        Args:
+            returns: Array of historical returns
+            confidence_level: Confidence level for VaR (e.g., 0.95 for 95%)
+            
+        Returns:
+            Historical VaR as a negative number (e.g., -0.05 for -5%)
+        """
+        if len(returns) == 0:
+            return 0.0
+            
+        # Calculate the percentile of the distribution of returns
+        var = np.percentile(returns, (1 - confidence_level) * 100)
+        return float(var)
+        
+    def calculate_parametric_var(
+        self, 
+        mean_return: float, 
+        volatility: float, 
+        confidence_level: float = 0.95
+    ) -> float:
+        """
+        Calculate Parametric (Variance-Covariance) Value at Risk (VaR).
+        
+        Args:
+            mean_return: Mean return of the portfolio
+            volatility: Volatility (standard deviation) of the portfolio
+            confidence_level: Confidence level for VaR (e.g., 0.95 for 95%)
+            
+        Returns:
+            Parametric VaR as a negative number (e.g., -0.05 for -5%)
+        """
+        from scipy.stats import norm
+        
+        # Calculate the z-score for the confidence level
+        z_score = norm.ppf(1 - confidence_level)
+        
+        # Calculate parametric VaR
+        var = mean_return + z_score * volatility
+        return float(var)

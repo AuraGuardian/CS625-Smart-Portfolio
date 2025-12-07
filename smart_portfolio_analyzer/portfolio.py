@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional, TypeVar, Tuple, Any, Type
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field
 import numpy as np
 import numpy.typing as npt
@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .assets import Asset, StockAsset, BondAsset
+from .assets import Asset, StockAsset, CryptoAsset, ForexAsset, OptionAsset
 
 # Type aliases
 FloatArray = npt.NDArray[np.float64]
@@ -209,7 +209,7 @@ class Portfolio:
             
         Time Complexity: O(n) where n is the number of assets
         """
-        from .assets import StockAsset, BondAsset  # Import here to avoid circular imports
+        from .assets import StockAsset, CryptoAsset, ForexAsset, OptionAsset  # Import here to avoid circular imports
         
         # Create a new portfolio
         portfolio = cls(
@@ -226,8 +226,12 @@ class Portfolio:
             try:
                 if asset_type == 'stock':
                     asset = StockAsset.from_dict(asset_data)
-                elif asset_type == 'bond':
-                    asset = BondAsset.from_dict(asset_data)
+                elif asset_type == 'crypto':
+                    asset = CryptoAsset.from_dict(asset_data)
+                elif asset_type == 'forex':
+                    asset = ForexAsset.from_dict(asset_data)
+                elif asset_type == 'option':
+                    asset = OptionAsset.from_dict(asset_data)
                 else:
                     raise ValueError(f"Unknown asset type: {asset_type}")
                 
@@ -312,7 +316,7 @@ class Portfolio:
             
         Time Complexity: O(n) where n is the number of assets
         """
-        return sum(asset.current_value() for asset in self.assets)
+        return sum(asset.current_value() for asset in self.assets if asset.current_value() is not None)
     
     def get_asset_allocation(self) -> Dict[str, float]:
         """Get the allocation of each asset as a percentage of the total portfolio.
@@ -327,11 +331,70 @@ class Portfolio:
         asset_allocation = {}
         for asset in self.assets:
             # Only include assets with positive value
-            asset_value = asset.current_value()
+            asset_value = asset.current_value()  # Call as method
             if asset_value > 0:
                 asset_allocation[asset.ticker] = (asset_value / total_value) * 100
                 
         return asset_allocation
+    
+    def update_prices(self, data_manager=None) -> None:
+        """
+        Update the current prices of all assets in the portfolio.
+        
+        Args:
+            data_manager: Optional DataManager instance to fetch current prices.
+                         If not provided, will try to get it from session state if available.
+        """
+        if not self.assets:
+            return
+            
+        # Get data manager from session state if not provided
+        if data_manager is None:
+            try:
+                import streamlit as st
+                if hasattr(st, 'session_state') and 'data_manager' in st.session_state:
+                    data_manager = st.session_state.data_manager
+            except ImportError:
+                # Streamlit is not available
+                pass
+                
+        if data_manager is None:
+            # If we still don't have a data manager, we can't update prices
+            logger.warning("No data manager available to update prices")
+            return
+            
+        # Get current prices for all assets
+        tickers = [asset.ticker for asset in self.assets if hasattr(asset, 'ticker')]
+        if not tickers:
+            return
+            
+        try:
+            # Get the most recent prices for all tickers
+            # Using a 1-day lookback to ensure we get the latest price
+            end_date = date.today()
+            start_date = (end_date - timedelta(days=7)).strftime('%Y-%m-%d')  # 1 week lookback to ensure we get data
+            end_date_str = end_date.strftime('%Y-%m-%d')
+            
+            # Get historical data for the most recent period
+            historical_data = data_manager.get_historical_prices(
+                tickers, 
+                start_date=start_date,
+                end_date=end_date_str,
+                interval='1d',
+                source='yfinance'  # Use yfinance as it's more reliable for current data
+            )
+            
+            # Update each asset with its most recent price
+            for asset in self.assets:
+                if hasattr(asset, 'ticker') and asset.ticker in historical_data:
+                    df = historical_data[asset.ticker]
+                    if not df.empty:
+                        # Get the most recent price
+                        latest_price = df['close'].iloc[-1]
+                        asset.update_price(latest_price, end_date)
+        except Exception as e:
+            logger.error(f"Error updating asset prices: {str(e)}")
+            raise
     
     def get_historical_returns(self, days: int = 30) -> Dict[str, List[float]]:
         """Simulate historical returns for the portfolio.
@@ -388,15 +451,28 @@ class Portfolio:
         
         # Rebuild assets
         for asset_data in data.get('assets', {}).values():
-            asset_type = asset_data.get('asset_type')
-            if asset_type == 'STOCK':
-                asset = StockAsset.from_dict(asset_data)
-            elif asset_type == 'BOND':
-                asset = BondAsset.from_dict(asset_data)
-            else:
-                continue  # Skip unknown asset types
+            asset_type = asset_data.get('asset_type', '').upper()
+            try:
+                if asset_type == 'STOCK':
+                    asset = StockAsset.from_dict(asset_data)
+                elif asset_type == 'CRYPTO':
+                    from .assets.crypto_asset import CryptoAsset
+                    asset = CryptoAsset.from_dict(asset_data)
+                elif asset_type == 'FOREX':
+                    from .assets.forex_asset import ForexAsset
+                    asset = ForexAsset.from_dict(asset_data)
+                elif asset_type == 'OPTION':
+                    from .assets.option_asset import OptionAsset
+                    asset = OptionAsset.from_dict(asset_data)
+                else:
+                    logger.warning(f"Skipping unknown asset type: {asset_type}")
+                    continue
                 
-            portfolio.assets[asset.asset_id] = asset
+                portfolio.assets[asset.asset_id] = asset
+            except Exception as e:
+                logger.error(f"Error creating {asset_type} asset from data: {asset_data}")
+                logger.error(f"Error details: {str(e)}")
+                continue
         
         portfolio.last_updated = datetime.fromisoformat(data.get('last_updated', data['created_at']))
         return portfolio

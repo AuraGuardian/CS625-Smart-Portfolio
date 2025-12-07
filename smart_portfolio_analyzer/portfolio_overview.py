@@ -877,7 +877,7 @@ class PortfolioOverview:
 # Example usage
 if __name__ == "__main__":
     from portfolio import Portfolio
-    from assets import StockAsset, BondAsset
+    from assets import StockAsset, CryptoAsset, ForexAsset, OptionAsset
     from datetime import datetime, timedelta
     
     # Create a sample portfolio
