@@ -1,40 +1,45 @@
 # Core dependencies
-numpy==1.24.3
-pandas==2.0.3
-matplotlib==3.7.2
-scipy==1.10.1
-yfinance==0.2.28
-requests==2.31.0
-PyYAML==6.0.1
-python-dateutil==2.8.2
-python-dotenv==1.0.0
-bcrypt==4.0.1
-PyJWT==2.8.0
-streamlit-authenticator==0.2.2
+numpy>=1.26.0
+pandas>=2.1.0
+matplotlib>=3.8.0
+scipy>=1.11.0
+yfinance>=0.2.33
+requests>=2.31.0
+PyYAML>=6.0.1
+python-dateutil>=2.8.2
+python-dotenv>=1.0.0
+bcrypt>=4.0.1
+PyJWT>=2.8.0
+streamlit-authenticator>=0.2.2
 
 # Streamlit and UI
-streamlit==1.28.0
-streamlit-option-menu==0.3.6
-streamlit-extras==0.3.1
+streamlit>=1.28.0
+streamlit-option-menu>=0.3.6
+streamlit-extras>=0.3.1
 
 # Data visualization
-plotly==5.16.1
-kaleido==0.2.1  # Required for static image export
+plotly>=5.17.0
+kaleido>=0.2.1  # Required for static image export
 
 # Financial data
-polygon-api-client==1.13.3
-alpha_vantage==2.3.1
+polygon-api-client>=1.14.0
+alpha-vantage>=2.3.1
 
 # Time series forecasting
-prophet==1.1.5
-holidays==0.86
-#pystan==2.19.1.1
+prophet>=1.1.5
+holidays>=0.86.0
+# pystan>=2.19.1.1  # Uncomment if needed for prophet
 
 # Data processing
-ta==0.10.2  # Technical analysis library
-pytz==2023.3  # Timezone handling
+ta>=0.10.2  # Technical analysis library
+pytz>=2023.3  # Timezone handling
 
 # Build and development
-setuptools==68.0.0
-wheel==0.41.2
-Cython==3.0.2
+setuptools>=68.0.0
+wheel>=0.41.2
+Cython>=3.0.2
+
+# Additional recommended packages
+pytest>=7.4.0  # For testing
+black>=23.7.0  # Code formatting
+isort>=5.12.0  # Import sorting
