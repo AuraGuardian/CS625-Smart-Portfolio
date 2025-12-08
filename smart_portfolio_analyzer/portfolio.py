@@ -44,6 +44,10 @@ class Portfolio:
     def __post_init__(self):
         """Initialize the portfolio and validate weights."""
         self._validate_weights()
+        
+        # Initialize price cache
+        self._price_cache = {}
+        self._price_cache_date = None
     
     def _validate_weights(self) -> None:
         """Ensure weights sum to 1 (within floating point tolerance)."""
@@ -54,7 +58,7 @@ class Portfolio:
         if not np.isclose(total, 1.0, rtol=1e-5):
             raise ValueError(f"Weights must sum to 1.0, got {total}")
     
-    def add_asset(self, asset: Asset, weight: Optional[float] = None) -> None:
+    def add_asset(self, asset: Asset, weight: Optional[float] = None, allow_duplicates: bool = False) -> None:
         """
         Add an asset to the portfolio with an optional weight.
         
@@ -62,12 +66,23 @@ class Portfolio:
             asset: The asset to add
             weight: Optional weight of the asset in the portfolio (0-1). 
                    If None, weight will be distributed equally among all assets.
+            allow_duplicates: If True and asset exists, adds to existing quantity.
+                             If False (default), raises an error for duplicate tickers.
             
-        Time Complexity: O(n) where n is the number of assets (due to weight normalization)
+        Time Complexity: O(n) where n is the number of assets
         """
-        if asset.ticker in {a.ticker for a in self.assets}:
-            raise ValueError(f"Asset with ticker {asset.ticker} already exists in the portfolio")
+        # Check if asset with same ticker already exists
+        existing_asset = next((a for a in self.assets if a.ticker == asset.ticker), None)
+        
+        if existing_asset is not None:
+            if not allow_duplicates:
+                raise ValueError(f"Asset with ticker {asset.ticker} already exists in the portfolio")
             
+            # Add to existing quantity
+            existing_asset.quantity += asset.quantity
+            return  # Skip the rest as we've updated the existing asset
+        
+        # If we get here, it's a new asset
         self.assets.append(asset)
         
         if weight is not None:
@@ -75,7 +90,6 @@ class Portfolio:
                 raise ValueError(f"Weight must be between 0 and 1, got {weight}")
             self.weights[asset.ticker] = weight
         else:
-            # If no weight provided, distribute remaining weight equally
             n = len(self.assets)
             self.weights[asset.ticker] = 1.0 / n
             
@@ -92,6 +106,8 @@ class Portfolio:
         """Invalidate cached calculations when portfolio changes."""
         self._covariance_matrix = None
         self._expected_returns = None
+        self._cached_total = None
+        self._last_updated = None
     
     def calculate_expected_return(self) -> float:
         """
@@ -309,14 +325,122 @@ class Portfolio:
     
     def get_total_value(self) -> float:
         """
-        Calculate the total market value of the portfolio.
+        Calculate the total market value of the portfolio using the latest cached prices.
         
         Returns:
-            float: The total market value of all assets in the portfolio
-            
-        Time Complexity: O(n) where n is the number of assets
+            float: The total market value calculated as sum(latest_price * quantity)
         """
-        return sum(asset.current_value() for asset in self.assets if asset.current_value() is not None)
+        total = 0.0
+        
+        # First, ensure we have the latest prices in cache
+        self.update_prices()
+        
+        # Then calculate using the most recent cached prices
+        for asset in self.assets:
+            if hasattr(asset, 'ticker') and hasattr(asset, 'quantity'):
+                ticker = asset.ticker
+                quantity = getattr(asset, 'quantity', 0)
+                
+                # Get the latest price from cache
+                latest_price = None
+                if ticker in self._price_cache and self._price_cache[ticker]:
+                    latest_price = self._price_cache[ticker][-1]
+                
+                # If no cached price, use current_price as fallback
+                if latest_price is None and hasattr(asset, 'current_price'):
+                    latest_price = getattr(asset, 'current_price', 0)
+                
+                # Final fallback to purchase price if no other price is available
+                if latest_price is None:
+                    latest_price = getattr(asset, 'purchase_price', 0)
+                
+                total += latest_price * quantity
+        
+        return round(total, 2)
+        
+    def get_purchase_value(self) -> float:
+        """
+        Calculate the total amount invested in the portfolio.
+        
+        Returns:
+            float: The total invested amount (sum of purchase_price * quantity for all assets)
+        """
+        total_invested = 0.0
+        for asset in self.assets:
+            if hasattr(asset, 'purchase_price') and hasattr(asset, 'quantity'):
+                purchase_price = getattr(asset, 'purchase_price', 0)
+                quantity = getattr(asset, 'quantity', 0)
+                total_invested += purchase_price * quantity
+        return round(total_invested, 2)
+        
+    def get_total_pnl(self) -> Dict[str, float]:
+        """
+        Calculate the total profit and loss of the portfolio.
+        
+        Returns:
+            Dict[str, float]: Dictionary containing:
+                - 'amount': Total P&L in dollars (current_value - total_invested)
+                - 'percentage': Total P&L as a percentage of total invested
+        """
+        total_invested = self.get_purchase_value()
+        current_value = self.get_total_value()
+        
+        # Calculate P&L
+        pnl_amount = current_value - total_invested
+        pnl_percent = (pnl_amount / total_invested * 100) if total_invested > 0 else 0.0
+        
+        return {
+            'amount': round(pnl_amount, 2),
+            'percentage': round(pnl_percent, 2)
+        }
+        
+    def get_asset_details(self) -> List[Dict]:
+        """
+        Get detailed information about each asset including purchase date, current value, and P&L.
+        Uses real-time prices from Polygon API.
+        
+        Returns:
+            List[Dict]: List of dictionaries containing asset details
+        """
+        # Ensure we have the latest prices
+        self.update_prices()
+        
+        asset_details = []
+        for asset in self.assets:
+            if hasattr(asset, 'ticker'):
+                # Get current price (should be updated by update_prices)
+                current_price = getattr(asset, 'current_price', 0)
+                purchase_price = getattr(asset, 'purchase_price', 0)
+                quantity = getattr(asset, 'quantity', 0)
+                purchase_date = getattr(asset, 'purchase_date', 'N/A')
+                last_updated = getattr(asset, 'last_updated', datetime.now())
+                
+                if isinstance(purchase_date, date):
+                    purchase_date = purchase_date.strftime('%Y-%m-%d')
+                
+                # Format last updated time
+                last_updated_str = last_updated.strftime('%Y-%m-%d %H:%M:%S') if hasattr(last_updated, 'strftime') else 'N/A'
+                
+                current_value = current_price * quantity
+                purchase_value = purchase_price * quantity
+                pnl_amount = current_value - purchase_value
+                pnl_percent = (pnl_amount / purchase_value * 100) if purchase_value > 0 else 0
+                
+                asset_details.append({
+                    'ticker': asset.ticker,
+                    'name': getattr(asset, 'name', asset.ticker),
+                    'purchase_date': purchase_date,
+                    'purchase_price': purchase_price,
+                    'purchase_value': purchase_value,
+                    'current_price': current_price,
+                    'quantity': quantity,
+                    'current_value': current_value,
+                    'pnl_amount': round(pnl_amount, 2),
+                    'pnl_percent': round(pnl_percent, 2),
+                    'exchange': getattr(asset, 'exchange', 'N/A'),
+                    'last_updated': last_updated_str
+                })
+        return asset_details
     
     def get_asset_allocation(self) -> Dict[str, float]:
         """Get the allocation of each asset as a percentage of the total portfolio.
@@ -337,64 +461,103 @@ class Portfolio:
                 
         return asset_allocation
     
-    def update_prices(self, data_manager=None) -> None:
+    def _get_polygon_price(self, ticker: str) -> Optional[float]:
         """
-        Update the current prices of all assets in the portfolio.
+        Fetch the latest price for a ticker using Polygon API.
         
         Args:
-            data_manager: Optional DataManager instance to fetch current prices.
-                         If not provided, will try to get it from session state if available.
+            ticker: The ticker symbol to fetch price for
+            
+        Returns:
+            float: The latest price, or None if not available
+        """
+        try:
+            from polygon import RESTClient
+            import os
+            
+            api_key = os.getenv('POLYGON_API_KEY')
+            if not api_key:
+                logger.error("POLYGON_API_KEY environment variable not set")
+                return None
+                
+            client = RESTClient(api_key)
+            quote = client.get_last_trade(ticker)
+            return float(quote.price) if hasattr(quote, 'price') else None
+            
+        except Exception as e:
+            logger.error(f"Error fetching price for {ticker} from Polygon: {str(e)}")
+            return None
+    
+    def update_prices(self) -> None:
+        """
+        Update the current prices of all assets in the portfolio using Polygon API.
+        Uses a daily cache to avoid unnecessary API calls.
         """
         if not self.assets:
             return
             
-        # Get data manager from session state if not provided
-        if data_manager is None:
-            try:
-                import streamlit as st
-                if hasattr(st, 'session_state') and 'data_manager' in st.session_state:
-                    data_manager = st.session_state.data_manager
-            except ImportError:
-                # Streamlit is not available
-                pass
-                
-        if data_manager is None:
-            # If we still don't have a data manager, we can't update prices
-            logger.warning("No data manager available to update prices")
-            return
-            
-        # Get current prices for all assets
-        tickers = [asset.ticker for asset in self.assets if hasattr(asset, 'ticker')]
-        if not tickers:
-            return
-            
-        try:
-            # Get the most recent prices for all tickers
-            # Using a 1-day lookback to ensure we get the latest price
-            end_date = date.today()
-            start_date = (end_date - timedelta(days=7)).strftime('%Y-%m-%d')  # 1 week lookback to ensure we get data
-            end_date_str = end_date.strftime('%Y-%m-%d')
-            
-            # Get historical data for the most recent period
-            historical_data = data_manager.get_historical_prices(
-                tickers, 
-                start_date=start_date,
-                end_date=end_date_str,
-                interval='1d',
-                source='yfinance'  # Use yfinance as it's more reliable for current data
-            )
-            
-            # Update each asset with its most recent price
+        today = date.today()
+        cache_is_fresh = (self._price_cache_date == today)
+        
+        # First, ensure we have the latest prices in the cache
+        if not cache_is_fresh:
             for asset in self.assets:
-                if hasattr(asset, 'ticker') and asset.ticker in historical_data:
-                    df = historical_data[asset.ticker]
-                    if not df.empty:
-                        # Get the most recent price
-                        latest_price = df['close'].iloc[-1]
-                        asset.update_price(latest_price, end_date)
-        except Exception as e:
-            logger.error(f"Error updating asset prices: {str(e)}")
-            raise
+                if not hasattr(asset, 'ticker') or not hasattr(asset, 'purchase_price'):
+                    continue
+                    
+                ticker = asset.ticker
+                
+                try:
+                    from polygon import RESTClient
+                    import os
+                    
+                    api_key = os.getenv('POLYGON_API_KEY')
+                    if not api_key:
+                        raise ValueError("POLYGON_API_KEY environment variable not set")
+                        
+                    client = RESTClient(api_key)
+                    quote = client.get_last_trade(ticker)
+                    current_price = float(quote.price) if hasattr(quote, 'price') else None
+                    
+                    if current_price is not None:
+                        # Update the cache
+                        if ticker not in self._price_cache:
+                            self._price_cache[ticker] = []
+                        self._price_cache[ticker].append(current_price)
+                except Exception as e:
+                    logger.warning(f"Error fetching price for {ticker} from Polygon: {str(e)}")
+            
+            # Update cache date after fetching all prices
+            self._price_cache_date = today
+        
+        # Now update all assets with the latest cached prices
+        for asset in self.assets:
+            try:
+                if not hasattr(asset, 'ticker') or not hasattr(asset, 'purchase_price'):
+                    continue
+                    
+                ticker = asset.ticker
+                
+                # Always use the latest cached price if available
+                if ticker in self._price_cache and self._price_cache[ticker]:
+                    latest_price = self._price_cache[ticker][-1]
+                    asset.current_price = latest_price
+                    asset.last_updated = datetime.now()
+                # Fall back to existing current_price if no cache
+                elif hasattr(asset, 'current_price') and asset.current_price is not None:
+                    # Keep the existing price
+                    pass
+                # Final fallback to purchase price
+                else:
+                    asset.current_price = getattr(asset, 'purchase_price', 0)
+                    asset.last_updated = datetime.now()
+                        
+            except Exception as e:
+                logger.error(f"Error updating price for asset {getattr(asset, 'ticker', 'unknown')}: {str(e)}")
+                # If there's an error, try to keep the existing price or fall back to purchase price
+                if not hasattr(asset, 'current_price') or asset.current_price is None:
+                    asset.current_price = getattr(asset, 'purchase_price', 0)
+                    asset.last_updated = datetime.now()
     
     def get_historical_returns(self, days: int = 30) -> Dict[str, List[float]]:
         """Simulate historical returns for the portfolio.

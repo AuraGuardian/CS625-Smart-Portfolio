@@ -1,3 +1,4 @@
+import numpy as np
 from abc import ABC, abstractmethod
 from datetime import date
 from typing import Dict, Optional
@@ -98,11 +99,23 @@ class Asset(ABC):
             Current market value (price * quantity)
             
         Raises:
-            ValueError: If current price is not set
+            ValueError: If current price is not set or invalid
         """
         if self._current_price is None:
             raise ValueError("Current price not set. Call update_price() first.")
-        return self._current_price * self._quantity
+            
+        if not isinstance(self._current_price, (int, float)) or np.isnan(self._current_price):
+            raise ValueError(f"Invalid current price: {self._current_price}")
+            
+        if not isinstance(self._quantity, (int, float)) or np.isnan(self._quantity):
+            raise ValueError(f"Invalid quantity: {self._quantity}")
+            
+        value = self._current_price * self._quantity
+        
+        if value < 0:
+            raise ValueError(f"Negative value calculated: {value} (price: {self._current_price}, quantity: {self._quantity})")
+            
+        return value
 
     def cost_basis(self) -> float:
         """

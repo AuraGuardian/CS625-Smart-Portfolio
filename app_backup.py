@@ -1,63 +1,10 @@
 # Set page config must be the very first Streamlit command
 import streamlit as st
-
-# Configure page
 st.set_page_config(
     page_title="SPARS - Smart Portfolio Analysis and Risk System",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Import authentication module
-from auth import get_authenticator, login
-
-# Initialize session state for authentication
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.username = None
-    st.session_state.authenticator = get_authenticator()
-
-# Show login form if not logged in
-if not st.session_state.logged_in:
-    # Call login function with the authenticator
-    auth_status, username = login(st.session_state.authenticator)
-    
-    # Update session state if login was successful
-    if auth_status:
-        st.session_state.logged_in = True
-        st.session_state.username = username
-        st.experimental_rerun()
-    else:
-        # Display the login form
-        st.stop()
-
-# ===== Only the code below runs if user is authenticated =====
-
-# Now import other dependencies after authentication is confirmed
-import yaml
-from yaml.loader import SafeLoader
-from datetime import datetime, timedelta, date
-import numpy as np
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from smart_portfolio_analyzer import Portfolio, StockAsset, CryptoAsset, ForexAsset, OptionAsset, DataManager
-import os
-from pathlib import Path
-import json
-import time
-from typing import Dict, List, Optional, Union, Tuple, Any
-
-# Add logout button to sidebar
-with st.sidebar:
-    st.write(f"Welcome, *{st.session_state.username}*")
-    if st.button('Logout'):
-        # Clear session state
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.session_state.logged_in = False
-        st.experimental_rerun()
 
 # Fix for Material Icons and BaseWeb components
 st.markdown("""
@@ -459,37 +406,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state with sample portfolio
+# Initialize session state
 if 'portfolio' not in st.session_state:
-    # Load the sample portfolio data
-    sample_portfolio = {
-        'name': 'Diversified ETF Portfolio',
-        'assets': [
-            {'ticker': 'VTI', 'quantity': 100, 'current_price': 238.75},
-            {'ticker': 'VXUS', 'quantity': 150, 'current_price': 62.30},
-            {'ticker': 'IEF', 'quantity': 120, 'current_price': 94.80},
-            {'ticker': 'XLK', 'quantity': 75, 'current_price': 198.40},
-            {'ticker': 'VIG', 'quantity': 80, 'current_price': 172.80}
-        ]
-    }
-    
-    # Create a new portfolio and add the sample assets
-    portfolio = Portfolio("Sample Portfolio")
-    for asset_data in sample_portfolio['assets']:
-        asset = StockAsset(
-            asset_id=asset_data['ticker'],  # Using ticker as asset_id for simplicity
-            name=asset_data['ticker'],      # Using ticker as name for simplicity
-            ticker=asset_data['ticker'],
-            purchase_price=asset_data['current_price'],  # Using current as purchase price for simplicity
-            quantity=asset_data['quantity'],
-            purchase_date=date.today()
-        )
-        asset.current_price = asset_data['current_price']
-        portfolio.add_asset(asset)
-    
-    st.session_state.portfolio = portfolio
-
-# Initialize data manager if not already set
+    st.session_state.portfolio = Portfolio("My Portfolio")
 if 'data_manager' not in st.session_state:
     st.session_state.data_manager = DATA_MANAGER
 st.sidebar.markdown("""
@@ -1511,113 +1430,24 @@ with tab1:
     except Exception as e:
         st.error(f"Error updating prices: {str(e)}")
     
-    # Calculate total portfolio value using Polygon API for current prices
-    total_value = 0.0
-    asset_values = {}
-    
-    # Initialize DataManager with Polygon API key
-    try:
-        from smart_portfolio_analyzer.data_manager import DataManager
-        import os
-        from dotenv import load_dotenv
-        
-        load_dotenv()
-        POLYGON_API_KEY = os.getenv('POLYGON_API_KEY')
-        
-        if not POLYGON_API_KEY:
-            st.error("POLYGON_API_KEY not found in environment variables")
-            # Continue with the rest of the code but show error
-            data_manager = None
-        else:
-            data_manager = DataManager(api_key=POLYGON_API_KEY)
-        
-        # Get current date for the end date
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')  # Get last 5 days of data
-        
-        # Get all tickers from the portfolio
-        tickers = [asset.ticker for asset in st.session_state.portfolio.assets 
-                  if hasattr(asset, 'ticker') and hasattr(asset, 'quantity')]
-        
-        if tickers:
-            # Fetch the latest prices using Polygon API
-            hist_data = data_manager.get_historical_prices(
-                tickers,
-                start_date=start_date,
-                end_date=end_date,
-                period='5d',
-                interval='1d',
-                source='polygon'
-            )
-            
-            # Calculate total value and asset values
-            for asset in st.session_state.portfolio.assets:
-                if hasattr(asset, 'ticker') and hasattr(asset, 'quantity'):
-                    ticker = asset.ticker
-                    quantity = getattr(asset, 'quantity', 0)
-                    asset_value = 0.0
-                    
-                    # Get the latest price from the historical data
-                    if ticker in hist_data and not hist_data[ticker].empty:
-                        latest_price = hist_data[ticker]['close'].iloc[-1]
-                        asset_value = latest_price * quantity
-                        # Update the asset's current price
-                        if hasattr(asset, 'current_price'):
-                            asset.current_price = latest_price
-                    else:
-                        # Fallback to current_price if available
-                        latest_price = getattr(asset, 'current_price', 0)
-                        if latest_price is None:
-                            latest_price = getattr(asset, 'purchase_price', 0)
-                        asset_value = latest_price * quantity
-                    
-                    asset_values[ticker] = asset_value
-                    total_value += asset_value
-    
-    except Exception as e:
-        st.error(f"Error fetching data from Polygon API: {str(e)}")
-        # Fallback to the original method if there's an error
-        for asset in st.session_state.portfolio.assets:
-            if hasattr(asset, 'ticker') and hasattr(asset, 'quantity'):
-                ticker = asset.ticker
-                quantity = getattr(asset, 'quantity', 0)
-                latest_price = getattr(asset, 'current_price', 0) or getattr(asset, 'purchase_price', 0)
-                asset_value = latest_price * quantity
-                asset_values[ticker] = asset_value
-                total_value += asset_value
-    
-    # Calculate total purchase value
-    total_purchase_value = sum(
-        getattr(asset, 'purchase_price', 0) * getattr(asset, 'quantity', 0)
-        for asset in st.session_state.portfolio.assets
-    )
-    
-    # Calculate P&L
-    total_pl = total_value - total_purchase_value
-    pl_percent = (total_pl / total_purchase_value * 100) if total_purchase_value > 0 else 0
-    
-    # Display metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        # Show the latest portfolio value with a tooltip
-        st.metric(
-            "Total Portfolio Value", 
-            f"${total_value:,.2f}",
-            help="Latest value from today's time series data"
-        )
+        total_value = st.session_state.portfolio.get_total_value()
+        st.metric("Total Value", f"${total_value:,.2f}")
     with col2:
         st.metric("Number of Assets", len(st.session_state.portfolio.assets))
     with col3:
-        st.metric(
-            "Total P&L", 
-            f"${total_pl:,.2f}",
-            f"{pl_percent:+.2f}%"
-        )
-    with col4:
-        st.metric("Total Invested", f"${total_purchase_value:,.2f}")
-        
-    # The portfolio value over time chart is now handled in its own section
-    # and uses the same data source as the total value shown above
+        if st.session_state.portfolio.assets:
+            total_pl = sum(asset.profit_loss() for asset in st.session_state.portfolio.assets)
+            total_cost_basis = sum(asset.cost_basis() for asset in st.session_state.portfolio.assets)
+            pl_percent = (total_pl / total_cost_basis * 100) if total_cost_basis > 0 else 0
+            st.metric(
+                "Total P&L", 
+                f"${total_pl:,.2f}",
+                f"{pl_percent:.2f}%"
+            )
+        else:
+            st.metric("Total P&L", "$0.00", "0.00%")
     
     # Asset allocation with enhanced donut chart
     st.subheader("Asset Allocation")
@@ -1644,213 +1474,73 @@ with tab1:
         
         st.plotly_chart(fig, config={'displayModeBar': True}, use_container_width=True, key='portfolio_allocation_pie')
         
-        # Calculate total portfolio value using current prices
-        current_total_value = sum(asset_values.values()) if asset_values else 0
-        
-        # Use the calculated current value for allocation percentages
-        total_value = current_total_value
-        
-        # Display allocation as a table with percentages
-        if allocation and total_value > 0:
-            # Convert to list of dicts for the table
-            allocation_data = []
-            for asset in st.session_state.portfolio.assets:
-                if hasattr(asset, 'ticker') and hasattr(asset, 'current_price') and hasattr(asset, 'quantity'):
-                    # Get the latest price using Polygon API with yfinance fallback
-                    ticker = asset.ticker
-                    display_price = 0.0
-                    
-                    try:
-                        from smart_portfolio_analyzer.data_manager import DataManager
-                        # Get the API key from environment variables
-                        import os
-                        from dotenv import load_dotenv
-                        load_dotenv()
-                        POLYGON_API_KEY = os.getenv('POLYGON_API_KEY')
-                        
-                        if not POLYGON_API_KEY:
-                            raise ValueError("POLYGON_API_KEY not found in environment variables")
-                            
-                        # Initialize DataManager with the Polygon API key
-                        data_manager = DataManager(api_key=POLYGON_API_KEY)
-                        
-                        # Try to get data from Polygon first
-                        try:
-                            # Get data for the last 5 days to ensure we have the most recent data
-                            hist_data = data_manager.get_historical_prices(
-                                [ticker], 
-                                period="5d", 
-                                source='polygon'
-                            )
-                            
-                            if ticker in hist_data and not hist_data[ticker].empty:
-                                display_price = hist_data[ticker]['close'].iloc[-1]
-                            else:
-                                raise ValueError("No data from Polygon")
-                                
-                        except Exception as poly_error:
-                            st.warning(f"Error with Polygon for {ticker}, falling back to yfinance: {str(poly_error)}")
-                            # Fall back to yfinance if Polygon fails
-                            hist_data = data_manager.get_historical_prices(
-                                [ticker], 
-                                period="1d", 
-                                source='yfinance'
-                            )
-                            if ticker in hist_data and not hist_data[ticker].empty:
-                                display_price = hist_data[ticker]['close'].iloc[-1]
-                            else:
-                                raise ValueError("No data from yfinance")
-                        
-                        # Update the asset's current price for consistency
-                        asset.current_price = display_price
-                        # Update the asset_values dictionary
-                        asset_values[ticker] = display_price * asset.quantity
-                        
-                    except Exception as e:
-                        st.warning(f"Error fetching data for {ticker}: {str(e)}")
-                        # Fallback to existing value if both Polygon and yfinance fail
-                        display_price = getattr(asset, 'current_price', getattr(asset, 'price', 0))
-                    
-                    # Ensure we're using the latest price from the cache
-                    if ticker in asset_values:
-                        display_price = asset_values[ticker] / asset.quantity
-                    
-                    # Calculate asset value using the display price from the data cache
-                    asset_value = display_price * asset.quantity
-                    
-                    # Calculate allocation percentage based on the total portfolio value
-                    # Using a small epsilon to prevent division by zero
-                    epsilon = 1e-10
-                    allocation_pct = (asset_value / (total_value + epsilon)) * 100
-                    
-                    # Ensure allocation is between 0% and 100%
-                    allocation_pct = max(0.0, min(100.0, allocation_pct))
-                    
-                    # Round to 1 decimal place
-                    allocation_pct_rounded = round(allocation_pct, 1)
-                    
-                    allocation_data.append({
-                        'Ticker': ticker,
-                        'Current Price': f"${display_price:,.2f}",
-                        'Quantity': asset.quantity,
-                        'Value': f"${asset_value:,.2f}",
-                        'Allocation': allocation_pct_rounded  # Pass the raw value (0-100) for ProgressColumn
-                    })
-            
-            if allocation_data:
-                # Create a DataFrame and display it
-                import pandas as pd
-                df = pd.DataFrame(allocation_data)
-                # Add custom CSS for the table
-                st.markdown("""
-                <style>
-                    .table-container {
-                        display: flex;
-                        justify-content: center;
-                        width: 90%;
-                        margin: 5px 0;
-                    }
-                    .compact-table {
-                        font-size: 0.8em !important;
-                        margin: 0 auto !important;
-                        max-width: 90%;
-                        min-width: 300px;
-                    }
-                    .compact-table th, .compact-table td {
-                        padding: 1px 6px !important;
-                        line-height: 1.2 !important;
-                    }
-                    .compact-table .stProgress > div > div > div > div {
-                        height: 14px !important;
-                        min-height: 14px !important;
-                    }
-                    .compact-table .stProgress > div > div > div > div > div {
-                        height: 14px !important;
-                        min-height: 14px !important;
-                    }
-                    .stDataFrame {
-                        margin: 0 auto !important;
-                    }
-                </style>
-                """, unsafe_allow_html=True)
-                
-                # Display centered table
-                st.markdown('<div class="table-container">', unsafe_allow_html=True)
-                st.dataframe(
-                    df,
-                    column_config={
-                        'Ticker': st.column_config.TextColumn('Ticker', width='small'),
-                        'Current Price': st.column_config.NumberColumn('$', format='%.2f', width='small'),
-                        'Quantity': st.column_config.NumberColumn('Qty', format='%.2f', width='small'),
-                        'Value': st.column_config.NumberColumn('$Value', format='%.2f', width='small'),
-                        'Allocation': st.column_config.ProgressColumn(
-                            '%',
-                            format='%.1f%%',
-                            min_value=0,
-                            max_value=100,
-                            width='small'
-                        )
-                    },
-                    hide_index=True,
-                    use_container_width=True
+        # Add asset class metrics in a row
+        st.subheader("Allocation Breakdown")
+        cols = st.columns(min(3, len(allocation)))
+        for i, (asset_class, value) in enumerate(allocation.items()):
+            with cols[i % len(cols)]:
+                st.metric(
+                    label=asset_class,
+                    value=f"${value:,.2f}",
+                    delta=f"{(value / sum(allocation.values()) * 100):.1f}% of portfolio"
                 )
-                st.markdown('</div>', unsafe_allow_html=True)
         
         # Asset table with remove buttons
         st.subheader("Asset Details")
         asset_data = []
         for i, asset in enumerate(st.session_state.portfolio.assets):
-            # Get the latest price from the asset
-            ticker = asset.ticker
-            display_price = getattr(asset, 'current_price', getattr(asset, 'price', 0))
-            if display_price is None:
-                display_price = getattr(asset, 'purchase_price', 0)
-            
-            # Calculate values using the display price
-            current_value = display_price * asset._quantity if hasattr(asset, '_quantity') else 0
-            purchase_value = asset._purchase_price * asset._quantity if hasattr(asset, '_purchase_price') else 0
-            pl_value = current_value - purchase_value
-            pl_percent = (pl_value / purchase_value * 100) if purchase_value > 0 else 0
-            
             asset_data.append({
                 "Symbol": asset.ticker,
                 "Name": asset.name,
                 "Type": asset.asset_type,
                 "Quantity": asset._quantity,
                 "Purchase Price": f"${asset._purchase_price:,.2f}",
-                "Current Price": f"${display_price:,.2f}",
-                "Market Value": f"${current_value:,.2f}",
-                "P&L": f"${pl_value:,.2f}",
-                "P&L %": f"{pl_percent:.2f}%",
+                "Current Price": f"${asset._current_price:,.2f}" if asset._current_price is not None else "N/A",
+                "Market Value": f"${asset.current_value():,.2f}" if asset.current_value() is not None else "N/A",
+                "P&L": f"${asset.profit_loss():,.2f}",
+                "P&L %": f"{asset.profit_loss_percent() * 100:.2f}%",
                 "Remove": i  # Store index for removal
             })
         
         # Display each asset with a remove button
         for i, asset in enumerate(st.session_state.portfolio.assets):
             col1, col2 = st.columns([9, 1])
-            
-            # Get asset details
-            ticker = getattr(asset, 'ticker', 'N/A')
-            name = getattr(asset, 'name', 'N/A')
-            asset_type = getattr(asset, 'asset_type', 'N/A')
-            quantity = getattr(asset, 'quantity', 0)
-            current_price = getattr(asset, 'current_price', 0)
-            purchase_price = getattr(asset, 'purchase_price', 0)
-            
-            # Calculate values
-            current_value = current_price * quantity if current_price else 0
-            pl_value = (current_price - purchase_price) * quantity if current_price and purchase_price else 0
-            pl_percent = (pl_value / (purchase_price * quantity)) * 100 if purchase_price and quantity else 0
-            
-            # Format the display values
-            price = f"${current_price:,.2f}" if current_price is not None else 'N/A'
-            current_value_str = f"${current_value:,.2f}" if current_value is not None else 'N/A'
-            color = 'red' if pl_value < 0 else 'green' if pl_value > 0 else 'black'
-            pl_str = f"{pl_percent:+.2f}% (${pl_value:+,.2f})" if pl_value is not None else 'N/A'
-            
             with col1:
+                # Prepare all values first
+                ticker = getattr(asset, 'ticker', 'N/A')
+                name = getattr(asset, 'name', 'Unnamed Asset')
+                asset_type = getattr(asset, 'asset_type', 'N/A')
+                quantity = getattr(asset, '_quantity', 0)
+                
+                # Format price
+                if hasattr(asset, '_current_price') and asset._current_price is not None:
+                    price = f"${asset._current_price:,.2f}"
+                else:
+                    price = 'N/A'
+                
+                # Format current value
+                current_value = getattr(asset, 'current_value', 0)
+                current_value_str = f"${current_value:,.2f}" if isinstance(current_value, (int, float)) else 'N/A'
+                
+                # Format profit/loss
+                pl_percent = 0
+                pl_value = 0
+                color = 'black'  # Default color
+                
+                if hasattr(asset, 'profit_loss') and callable(asset.profit_loss) and \
+                   hasattr(asset, 'profit_loss_percent') and callable(asset.profit_loss_percent):
+                    try:
+                        pl_value = asset.profit_loss()
+                        pl_percent = asset.profit_loss_percent() * 100
+                        color = 'red' if pl_value < 0 else 'green'
+                        pl_str = f"{pl_percent:+.2f}% (${pl_value:+,.2f})"
+                    except:
+                        pl_str = 'N/A'
+                else:
+                    pl_str = 'N/A'
+                
                 # Create the HTML
-                st.markdown(f"""
+                html_content = f"""
                 <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
@@ -1867,14 +1557,14 @@ with tab1:
                         </div>
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
-                
+                """
+                st.markdown(html_content, unsafe_allow_html=True)
             with col2:
-                if st.button("×", key=f"remove_{i}"):
+                if st.button("❌", key=f"remove_{ticker}_{i}_{id(asset)}"):
                     try:
-                        st.session_state.portfolio.remove_asset(asset)
-                        st.success(f"Removed {ticker} from portfolio")
-                        st.experimental_rerun()
+                        st.session_state.portfolio.remove_asset(asset.ticker)
+                        st.success(f"Removed {asset.ticker} from portfolio")
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Error removing asset: {str(e)}")
     else:
@@ -3565,6 +3255,34 @@ with tab4:
                     )
                     
                     st.plotly_chart(fig, config={'displayModeBar': True}, use_container_width=True, use_container_height=True, key='efficient_frontier_plot')
+                    
+                    # Add some space
+                    st.markdown("---")
+                    
+                    # Display portfolio allocations
+                    st.subheader("Portfolio Allocations")
+                    
+                    # Create a DataFrame for allocations
+                    allocation_data = []
+                    
+                    # Add current portfolio
+                    current_allocation = {
+                        'Portfolio': 'Current',
+                        'Return': current_return,
+                        'Volatility': current_volatility,
+                        'Sharpe': current_sharpe,
+                        'Sortino': current_sortino
+                    }
+                    
+                    # Add optimal portfolios
+                    for i, (label, portfolio) in enumerate(optimal_portfolios.items()):
+                        allocation_data.append({
+                            'Portfolio': label,
+                            'Return': portfolio['return'],
+                            'Volatility': portfolio['volatility'],
+                            'Sharpe': portfolio['sharpe'],
+                            'Sortino': portfolio['sortino']
+                        })
                     
                     # Create DataFrame and display
                     allocation_df = pd.DataFrame(allocation_data)

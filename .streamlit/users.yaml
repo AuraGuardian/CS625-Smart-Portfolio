@@ -1,0 +1,16 @@
+cookie:
+  expiry_days: 30
+  key: some_signature_key
+  name: spars_auth_cookie
+credentials:
+  usernames:
+    auraguardian:
+      email: auraguardian@example.com
+      name: Richie Sawant
+      password: $2b$12$f0i57WHfrNzvt.15SLD5p.7bDL7Du6a3lgnONddGvLreoMKgoXAkO
+    testuser:
+      email: testuser@example.com
+      name: Test User
+      password: $2b$12$/d6KCqb.GYt7fYRFeJoCu.vwLGy4Fa7s8A12.XmXn74.yQn3Dhfj.
+preauthorized:
+  emails: []
