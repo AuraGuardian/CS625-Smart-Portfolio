@@ -46,7 +46,7 @@ def register_user(username: str, name: str, password: str):
     if username in config['credentials']['usernames']:
         raise ValueError('Username already exists')
     
-    # Hash the password
+    # Hash the password using streamlit-authenticator 0.4.2 API
     hashed_password = stauth.Hasher([password]).generate()[0]
     
     # Add the new user

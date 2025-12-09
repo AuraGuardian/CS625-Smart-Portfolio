@@ -1248,7 +1248,7 @@ with tab5:
                                                 with col1:
                                                     st.write(f"**{row['Symbol']}** - Value: {row['Value']}")
                                                 with col2:
-                                                    if st.button("❌", key=f"remove_{i}"):
+                                                    if st.button("❌", key=f"remove_asset_{i}_{row['Symbol']}"):
                                                         try:
                                                             # Remove the asset from the portfolio
                                                             st.session_state.portfolio.remove_asset(row['Symbol'])
@@ -1870,7 +1870,7 @@ with tab1:
                 """, unsafe_allow_html=True)
                 
             with col2:
-                if st.button("×", key=f"remove_{i}"):
+                if st.button("×", key=f"remove_asset_compact_{i}_{ticker}"):
                     try:
                         st.session_state.portfolio.remove_asset(asset)
                         st.success(f"Removed {ticker} from portfolio")
@@ -3571,19 +3571,31 @@ with tab4:
                     
                     # Format the DataFrame for display
                     display_df = allocation_df.copy()
-                    display_df['Return'] = (display_df['Return'] * 100).round(2).astype(str) + '%'
-                    display_df['Volatility'] = (display_df['Volatility'] * 100).round(2).astype(str) + '%'
-                    display_df['Sharpe'] = display_df['Sharpe'].round(2)
-                    display_df['Sortino'] = display_df['Sortino'].round(2)
                     
-                    # Add current portfolio to the top
-                    current_row = pd.DataFrame([{
-                        'Portfolio': 'Current',
-                        'Return': f"{current_return*100:.2f}%",
-                        'Volatility': f"{current_volatility*100:.2f}%",
-                        'Sharpe': round(current_sharpe, 2),
-                        'Sortino': round(current_sortino, 2)
-                    }])
+                    # Check if columns exist before trying to access them
+                    if 'Return' in display_df.columns:
+                        display_df['Return'] = (display_df['Return'] * 100).round(2).astype(str) + '%'
+                    if 'Volatility' in display_df.columns:
+                        display_df['Volatility'] = (display_df['Volatility'] * 100).round(2).astype(str) + '%'
+                    if 'Sharpe' in display_df.columns:
+                        display_df['Sharpe'] = display_df['Sharpe'].round(2)
+                    if 'Sortino' in display_df.columns:
+                        display_df['Sortino'] = display_df['Sortino'].round(2)
+                    
+                    # Create current portfolio row with proper error handling
+                    current_row_data = {'Portfolio': 'Current'}
+                    
+                    # Only add columns that exist in the display_df
+                    if 'Return' in display_df.columns:
+                        current_row_data['Return'] = f"{current_return*100:.2f}%"
+                    if 'Volatility' in display_df.columns:
+                        current_row_data['Volatility'] = f"{current_volatility*100:.2f}%"
+                    if 'Sharpe' in display_df.columns:
+                        current_row_data['Sharpe'] = round(current_sharpe, 2)
+                    if 'Sortino' in display_df.columns:
+                        current_row_data['Sortino'] = round(current_sortino, 2)
+                        
+                    current_row = pd.DataFrame([current_row_data])
                     
                     display_df = pd.concat([current_row, display_df]).reset_index(drop=True)
                     
