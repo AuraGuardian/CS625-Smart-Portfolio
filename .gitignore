@@ -36,6 +36,9 @@ ENV/
 .env.local
 .env.*.local
 
+# Streamlit secrets (contain API keys — never commit)
+.streamlit/secrets.toml
+
 # API Keys
 config.py
 secrets.py
