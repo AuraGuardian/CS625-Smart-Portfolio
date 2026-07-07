@@ -64,6 +64,15 @@ class Asset(ABC):
         """Get the number of units held."""
         return self._quantity
 
+    @quantity.setter
+    def quantity(self, value: float) -> None:
+        """Set the number of units held."""
+        if not isinstance(value, (int, float)) or np.isnan(value):
+            raise ValueError(f"Invalid quantity: {value}")
+        if value < 0:
+            raise ValueError(f"Quantity cannot be negative: {value}")
+        self._quantity = value
+
     @property
     def current_price(self) -> Optional[float]:
         """Get the current market price of the asset."""
@@ -79,15 +88,21 @@ class Asset(ABC):
         """Get when the asset was last updated."""
         return self._last_updated
 
+    @last_updated.setter
+    def last_updated(self, value: Optional[date]) -> None:
+        """Set when the asset was last updated."""
+        self._last_updated = value
+
     def update_price(self, new_price: float, as_of_date: date) -> None:
         """
         Update the current market price of the asset.
-        
+
         Args:
             new_price: New market price
             as_of_date: Date of the price update
         """
-        # TODO: Add validation for new_price > 0
+        if not isinstance(new_price, (int, float)) or np.isnan(new_price) or new_price < 0:
+            raise ValueError(f"Invalid price: {new_price}")
         self._current_price = new_price
         self._last_updated = as_of_date
 
