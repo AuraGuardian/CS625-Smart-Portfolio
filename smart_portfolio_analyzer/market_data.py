@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Polygon.io API Configuration
 POLYGON_BASE_URL = "https://api.polygon.io"
-POLYGON_API_KEY = "r65B9O5aplSJn7BWSo8z8pNH8v2wW5yc"  # In production, use environment variables
+POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY")
 
 # Configure retry strategy
 retry_strategy = Retry(
